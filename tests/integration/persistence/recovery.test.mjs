@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile, writeFile, readdir } from 'node:fs/promises';
+import { readFile, writeFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import test from 'node:test';
 import * as core from '@semevolve/core';
@@ -8,27 +8,154 @@ import { concurrentClients, workspace, writer } from '../../support/persistence-
 
 const options = { mutableCollections: ['state'] };
 
-test('two real client processes contend for one revision through a real writer', { timeout: 20000 }, async t => {
+async function durableFiles(directory) {
+  const names = (await readdir(directory)).filter(name => name !== 'writer.lock').sort();
+  return Object.fromEntries(await Promise.all(names.map(async name => [name, await readFile(join(directory, name), 'utf8')])));
+}
+
+for (const mode of ['no checkpoint', 'old checkpoint', 'header only', 'refused result']) {
+  test(`F3 refuses a missing complete journal suffix: ${mode}`, { timeout: 20000 }, async t => {
+    const directory = await workspace(t);
+    const first = await writer(t, directory);
+    unwrap(await first.request('transact', batch()));
+    if (mode !== 'no checkpoint') unwrap(await first.request('checkpoint'));
+    const response = await first.request('transact', mode === 'refused result'
+      ? batch('refused', 0, [], []) : batch('two', 1, [insert('two', 'two')], [event('two')]));
+    assert.equal(response.ok, mode !== 'refused result');
+    await first.request('close'); await first.exit;
+    const journal = join(directory, 'journal.jsonl');
+    const lines = (await readFile(journal, 'utf8')).trimEnd().split('\n');
+    await writeFile(journal, lines.slice(0, mode === 'header only' ? 1 : -1).join('\n') + '\n');
+    const before = await durableFiles(directory);
+    const reopened = await writer(t, directory);
+    assert.equal(reopened.ready.type, 'open_failed', 'An acknowledged complete record must not silently disappear');
+    assert.match(reopened.ready.failure, /tail/u);
+    await reopened.exit;
+    assert.deepEqual(await durableFiles(directory), before);
+  });
+}
+
+for (const point of ['journal_synced', 'tail_before_switch', 'tail_after_switch']) {
+  test(`F3 kill and reopen at ${point} respects the journal/tail boundary`, { timeout: 20000 }, async t => {
+    const directory = await workspace(t);
+    const first = await writer(t, directory, point);
+    const pending = first.request('transact', batch()).catch(error => ({ lost: error.message }));
+    assert.equal((await first.receive(message => message.type === 'boundary')).point, point);
+    await first.kill(); await pending;
+    core.recoverFileStoreOwner(directory, first.ready.owner.token);
+    const before = await durableFiles(directory);
+    const reopened = await writer(t, directory);
+    if (point === 'tail_after_switch') {
+      assert.equal(reopened.ready.type, 'ready');
+      assert.equal(unwrap(await reopened.request('snapshot')).revision, 1);
+      assert.deepEqual(await reopened.request('transact', batch()), { ok: true, value: { revision: 1 } });
+      await reopened.request('close');
+    } else {
+      assert.equal(reopened.ready.type, 'open_failed');
+      assert.match(reopened.ready.failure, /tail/u);
+    }
+    await reopened.exit;
+    assert.deepEqual(await durableFiles(directory), before);
+  });
+}
+
+for (const damage of ['missing', 'invalid JSON', 'null', 'stale sequence', 'ahead sequence', 'different digest', 'invalid format', 'extra field']) {
+  test(`F3 refuses ${damage} in the independent tail and preserves evidence`, async t => {
+    const directory = await workspace(t);
+    const store = await core.openFileTaskStore(directory, options);
+    const path = join(directory, 'journal-tail.json');
+    const initial = await readFile(path, 'utf8');
+    unwrap(await store.transact(batch()));
+    await store.close();
+    const { digest: discarded, ...value } = JSON.parse(await readFile(path, 'utf8'));
+    void discarded;
+    if (damage === 'missing') await unlink(path);
+    else if (damage === 'invalid JSON') await writeFile(path, '{');
+    else if (damage === 'null') await writeFile(path, 'null');
+    else if (damage === 'stale sequence') await writeFile(path, initial);
+    else {
+      if (damage === 'ahead sequence') value.sequence++;
+      if (damage === 'different digest') value.journalDigest = core.digestJson('different');
+      if (damage === 'invalid format') value.format = 'other';
+      if (damage === 'extra field') value.extra = true;
+      await writeFile(path, core.canonicalJson({ ...value, digest: core.digestJson(value) }));
+    }
+    const before = await durableFiles(directory);
+    await assert.rejects(core.openFileTaskStore(directory, options));
+    assert.deepEqual(await durableFiles(directory), before);
+  });
+}
+
+test('F3 backup includes a tail witness that advances after restored writes', { timeout: 20000 }, async t => {
+  const directory = await workspace(t);
+  const backupRoot = await workspace(t);
+  const backup = join(backupRoot, 'backup');
+  const first = await writer(t, directory);
+  unwrap(await first.request('transact', batch()));
+  unwrap(await first.request('backup', backup));
+  await first.request('close'); await first.exit;
+  const restored = await writer(t, backup);
+  assert.equal(restored.ready.type, 'ready');
+  unwrap(await restored.request('transact', batch('two', 1, [insert('two', 'two')], [])));
+  await restored.request('close'); await restored.exit;
+  const restarted = await writer(t, backup);
+  assert.equal(unwrap(await restarted.request('snapshot')).revision, 2);
+  assert.equal(JSON.parse(await readFile(join(backup, 'journal-tail.json'), 'utf8')).sequence, 2);
+  await restarted.request('close'); await restarted.exit;
+});
+
+function assertDirectOverlap(trace, pids) {
+  const invoked = trace.filter(item => item.type === 'invoked' && item.source === 'direct_client');
+  assert.equal(invoked.length, 2, 'Both child clients must invoke the writer through their own direct connections');
+  assert.deepEqual(new Set(invoked.map(item => item.pid)), new Set(pids));
+  assert.equal(new Set(invoked.map(item => item.connectionId)).size, 2);
+  const held = trace.find(item => item.type === 'held');
+  const released = trace.find(item => item.type === 'released');
+  assert.ok(held && released, 'First transaction must be held while another transaction is invoked');
+  assert.ok(invoked[0].sequence < held.sequence && held.sequence < invoked[1].sequence);
+  assert.ok(invoked[1].sequence < released.sequence);
+  assert.equal(released.pending, 2, 'Both transaction promises must remain unresolved at release');
+  const settled = trace.filter(item => item.type === 'settled');
+  assert.equal(settled.length, 2);
+  assert.ok(settled.every(item => item.sequence > released.sequence));
+}
+
+test('F1 direct overlapping CAS from two real client processes', { timeout: 20000 }, async t => {
   const directory = await workspace(t);
   const server = await writer(t, directory);
   assert.equal(server.ready.type, 'ready');
-  const { pids, results } = await concurrentClients(t, server, [batch('a', 0, [insert('a')], [event('a')]), batch('b', 0, [insert('b')], [event('b')])]);
+  const requests = [batch('a', 0, [insert('a')], [event('a')]), batch('b', 0, [insert('b')], [event('b')])];
+  const { pids, results, trace } = await concurrentClients(t, server, requests);
+  assertDirectOverlap(trace, pids);
+  t.diagnostic(JSON.stringify({ pids, trace }));
   assert.equal(new Set([...pids, server.ready.pid, process.pid]).size, 4);
   assert.equal(results.filter(result => result.ok).length, 1);
   assert.deepEqual(results.find(result => !result.ok).error, { code: 'revision_conflict', expected: 0, actual: 1 });
-  assert.equal(unwrap(await server.request('snapshot')).events.length, 1);
+  const snapshot = unwrap(await server.request('snapshot'));
+  const winner = results.findIndex(result => result.ok);
+  assert.deepEqual(snapshot.entries, [requests[winner].mutations[0].entry]);
+  assert.deepEqual(snapshot.events, requests[winner].events);
   assert.equal(await server.request('close'), 'closed');
   await server.exit;
+  const reopened = await writer(t, directory);
+  assert.deepEqual(unwrap(await reopened.request('snapshot')), snapshot);
+  for (let index = 0; index < requests.length; index++) assert.deepEqual(await reopened.request('transact', requests[index]), results[index]);
+  await reopened.request('close'); await reopened.exit;
 });
 
-test('two real client processes cannot both reserve the last unit, a store CAS test only', { timeout: 20000 }, async t => {
+test('F1 direct overlapping last-unit reservation, a store CAS test only', { timeout: 20000 }, async t => {
   const directory = await workspace(t);
   const server = await writer(t, directory);
   unwrap(await server.request('transact', batch('seed', 0, [insert({ remaining: 1 })], [])));
   const reserve = id => batch(id, 1, [replace({ remaining: 0 }, { remaining: 1 }), insert({ outcome: 'pending', cost: null }, id, 'reservations')], [event(id)]);
-  const { results } = await concurrentClients(t, server, [reserve('a'), reserve('b')]);
+  const { pids, results, trace } = await concurrentClients(t, server, [reserve('a'), reserve('b')]);
+  assertDirectOverlap(trace, pids);
+  t.diagnostic(JSON.stringify({ pids, trace }));
   assert.equal(results.filter(result => result.ok).length, 1);
-  assert.equal(unwrap(await server.request('snapshot')).entries.filter(entry => entry.key.collection === 'reservations').length, 1);
+  const snapshot = unwrap(await server.request('snapshot'));
+  assert.equal(snapshot.entries.filter(entry => entry.key.collection === 'reservations').length, 1);
+  assert.deepEqual(snapshot.entries.find(entry => entry.key.collection === 'state').value, { remaining: 0 });
+  assert.deepEqual(snapshot.events, [event(results[0].ok ? 'a' : 'b')]);
   await server.request('close'); await server.exit;
 });
 

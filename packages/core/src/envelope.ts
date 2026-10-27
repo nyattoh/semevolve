@@ -8,6 +8,26 @@ const kinds = new Set(['utterance', 'clarification', 'proposal', 'acceptance', '
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
 const identifiers = (value: unknown): value is string[] => Array.isArray(value) && value.every(identifier) && new Set(value).size === value.length;
 
+function hasDuplicateMembers(text: string): boolean {
+  const scopes: (Set<string> | null)[] = [];
+  for (const token of text.matchAll(/"(?:[^"\\]|\\[\s\S])*"|[{}\[\]]/gu)) {
+    const raw = token[0];
+    if (raw === '{') scopes.push(new Set());
+    else if (raw === '[') scopes.push(null);
+    else if (raw === '}' || raw === ']') scopes.pop();
+    else {
+      let next = token.index + raw.length;
+      while (' \t\r\n'.includes(text[next] ?? '\0')) next++;
+      if (text[next] !== ':') continue;
+      const scope = scopes.at(-1);
+      const name: string = JSON.parse(raw);
+      if (scope?.has(name)) return true;
+      scope?.add(name);
+    }
+  }
+  return false;
+}
+
 export function parseEnvelope(wire: string | Uint8Array, context: EnvelopeContext, expectedDigest?: Digest): Result<StoredMessage, EnvelopeRejection> {
   const reject = (error: EnvelopeRejection): Result<StoredMessage, EnvelopeRejection> => ({ ok: false, error });
   if (!Number.isSafeInteger(context.maxBytes) || context.maxBytes < 1
@@ -16,7 +36,9 @@ export function parseEnvelope(wire: string | Uint8Array, context: EnvelopeContex
   if ((typeof wire === 'string' ? Buffer.byteLength(wire, 'utf8') : wire.byteLength) > context.maxBytes) return reject('oversize');
   let value: unknown;
   try {
-    value = JSON.parse(typeof wire === 'string' ? wire : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(wire));
+    const text = typeof wire === 'string' ? wire : new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(wire);
+    value = JSON.parse(text);
+    if (hasDuplicateMembers(text)) return reject('invalid_format');
   } catch { return reject('invalid_format'); }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return reject('invalid_format');
   const record = value as Record<string, unknown>;
@@ -40,6 +62,6 @@ export function parseEnvelope(wire: string | Uint8Array, context: EnvelopeContex
   if (record.created_at > context.now || record.created_at < context.epoch.openedAt) return reject('invalid_format');
   const envelope = record as unknown as Envelope;
   const digest = digestJson(envelope);
-  if (expectedDigest !== undefined && expectedDigest !== digest) return reject('invalid_format');
+  if (expectedDigest !== undefined && expectedDigest !== digest) return reject('digest_mismatch');
   return { ok: true, value: { envelope, digest } };
 }

@@ -61,16 +61,15 @@ export async function writer(t, directory, boundary = '') {
 }
 
 export async function concurrentClients(t, server, batches) {
-  const clients = batches.map(() => launch(t, 'persistence-client.mjs'));
+  await server.request('arm');
+  const clients = batches.map(() => launch(t, 'persistence-client.mjs', [String(server.ready.port)]));
   const ready = await Promise.all(clients.map(client => client.receive(message => message.type === 'ready')));
   const results = clients.map(async client => {
-    const request = await client.receive(message => message.type === 'request');
-    const result = await server.request('transact', request.argument);
-    client.child.send({ type: 'result', value: result });
     const received = await client.receive(message => message.type === 'result');
     await client.exit;
     return received.value;
   });
   clients.forEach((client, index) => client.child.send({ type: 'go', argument: batches[index] }));
-  return { pids: ready.map(message => message.pid), results: await Promise.all(results) };
+  const completed = await Promise.all(results);
+  return { pids: ready.map(message => message.pid), results: completed, trace: await server.request('trace') };
 }

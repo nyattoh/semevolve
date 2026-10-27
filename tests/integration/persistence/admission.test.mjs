@@ -40,6 +40,21 @@ test('I/O boundary failure retains unknown outcome until reopen and reconciliati
   assert.equal(unwrap(await recovered.snapshot()).events[0].data.outcome, 'pending');
 });
 
+test('F3 tail switch failure remains unknown and refuses an inconsistent reopen', async t => {
+  const directory = await workspace(t);
+  const store = await core.openFileTaskStore(directory, { onBoundary: async point => {
+    if (point === 'tail_before_switch') throw Error('synthetic tail switch failure');
+  } });
+  cleanup(t, () => store.close());
+  assert.equal((await store.transact(batch())).error.code, 'unavailable');
+  assert.equal((await store.snapshot()).error.code, 'unavailable');
+  assert.equal((await store.transact(batch('later', 1))).error.code, 'unavailable');
+  await store.close();
+  const before = await readFile(join(directory, 'journal.jsonl'), 'utf8');
+  await assert.rejects(core.openFileTaskStore(directory), /tail/u);
+  assert.equal(await readFile(join(directory, 'journal.jsonl'), 'utf8'), before);
+});
+
 test('reopening cannot silently change the immutable collection policy', async t => {
   const directory = await workspace(t);
   const store = await core.openFileTaskStore(directory);

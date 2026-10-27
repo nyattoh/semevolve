@@ -84,12 +84,29 @@ test('Envelope rejects malformed input, invalid UTF-8, and missing fields', () =
   }
 });
 
-test('Envelope verifies a supplied stored digest before returning the message', () => {
+for (const member of ['"task_id":"wrong"', '"payload":"wrong"', '"payload":"否定、条件、unknownを保持。"', '"ta\\u0073k_id":"wrong"']) {
+  for (const bytes of [false, true]) test(`F2 rejects duplicate decoded member ${member}, bytes=${bytes}`, () => {
+    const wire = `{${member},${JSON.stringify(envelope()).slice(1)}`;
+    assert.deepEqual(core.parseEnvelope(bytes ? Buffer.from(wire) : wire, context()), { ok: false, error: 'invalid_format' });
+  });
+}
+
+test('F2 accepts unique escaped names and JSON-looking payload strings', () => {
+  const value = { ...envelope(), payload: '"task_id":"a", "task_id":"b"; braces {} [] and \\ slash' };
+  const wire = JSON.stringify(value).replace('"task_id":', '"ta\\u0073k_id":');
+  assert.deepEqual(core.parseEnvelope(wire, context()), { ok: true, value: { envelope: value, digest: core.digestJson(value) } });
+});
+
+test('F4 Envelope distinguishes digest mismatch from malformed input', () => {
   const input = envelope();
   const digest = core.digestJson(input);
   assert.equal(core.parseEnvelope(JSON.stringify(input), context(), digest).ok, true);
   assert.deepEqual(core.parseEnvelope(JSON.stringify({ ...input, payload: 'changed' }), context(), digest),
+    { ok: false, error: 'digest_mismatch' });
+  assert.deepEqual(core.parseEnvelope('{', context(), digest), { ok: false, error: 'invalid_format' });
+  assert.deepEqual(core.parseEnvelope(`{"task_id":"wrong",${JSON.stringify(input).slice(1)}`, context(), digest),
     { ok: false, error: 'invalid_format' });
+  assert.equal(core.parseEnvelope(JSON.stringify({ ...input, payload: 'changed' }), context()).ok, true);
 });
 
 test('Envelope enforces trusted task, participant, epoch, deadline and bootstrap context', () => {

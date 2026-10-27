@@ -7,7 +7,8 @@ import type { StoreSnapshot, StoreTransaction, TaskStore } from './contracts/tas
 import { canonicalJson, digestJson } from './identity.js';
 import { copyBatch, invalidBatch, mutableCollections, StoreEngine, unavailable, type StoreOptions, type TransactionResult } from './store-engine.js';
 
-export type PersistenceBoundary = 'journal_before_append' | 'journal_partial' | 'journal_committed' | 'snapshot_before_switch' | 'snapshot_after_switch';
+export type PersistenceBoundary = 'journal_before_append' | 'journal_partial' | 'journal_synced'
+  | 'tail_before_switch' | 'tail_after_switch' | 'journal_committed' | 'snapshot_before_switch' | 'snapshot_after_switch';
 export interface FileStoreOptions extends StoreOptions {
   readonly maxPending?: number;
   readonly onBoundary?: (boundary: PersistenceBoundary) => Promise<void>;
@@ -98,9 +99,10 @@ export class FileTaskStore implements TaskStore {
         if (canonicalJson(readJson(manifest)) !== canonicalJson(this.header)) throw new Error('Store format or collection policy mismatch');
         if (!existsSync(this.journal)) throw new Error('Journal missing; preserve store');
       } else {
-        if (existsSync(this.journal) || existsSync(join(directory, 'snapshot.json'))) throw new Error('Store manifest missing; preserve files');
+        if (existsSync(this.journal) || existsSync(join(directory, 'snapshot.json')) || existsSync(join(directory, 'journal-tail.json'))) throw new Error('Store manifest missing; preserve files');
         writeNew(manifest, canonicalJson(this.header));
         writeNew(this.journal, canonicalJson(this.header) + '\n');
+        writeNew(join(directory, 'journal-tail.json'), canonicalJson(this.tailValue()));
         syncDirectory(directory);
       }
       this.replay();
@@ -134,7 +136,14 @@ export class FileTaskStore implements TaskStore {
       this.journalDigest = expected.digest;
       check();
     }
+    const tail = join(this.directory, 'journal-tail.json');
+    if (!existsSync(tail) || canonicalJson(readJson(tail)) !== canonicalJson(this.tailValue())) throw new Error('Journal tail mismatch; preserve data');
     if (!matched) throw new Error('Inconsistent snapshot; preserve data');
+  }
+
+  private tailValue(sequence = this.engine.records.length, journalDigest = this.journalDigest) {
+    const data = { format: 'semevolve-journal-tail-1', sequence, journalDigest };
+    return { ...data, digest: digestJson(data) };
   }
 
   private checkpointValue() {
@@ -181,6 +190,13 @@ export class FileTaskStore implements TaskStore {
         writeAll(fd, data.subarray(split));
         fsyncSync(fd);
       } finally { closeSync(fd); }
+      await this.options.onBoundary?.('journal_synced');
+      const temporary = join(this.directory, `journal-tail-${randomUUID()}.tmp`);
+      writeNew(temporary, canonicalJson(this.tailValue(record.sequence, digest)));
+      await this.options.onBoundary?.('tail_before_switch');
+      renameSync(temporary, join(this.directory, 'journal-tail.json'));
+      syncDirectory(this.directory);
+      await this.options.onBoundary?.('tail_after_switch');
       this.journalDigest = digest;
       const result = this.engine.commit(batch, prepared);
       await this.options.onBoundary?.('journal_committed');
@@ -206,6 +222,7 @@ export class FileTaskStore implements TaskStore {
       writeNew(join(destination, 'store.json'), canonicalJson(this.header));
       writeNew(join(destination, 'journal.jsonl'), readFileSync(this.journal, 'utf8'));
       writeNew(join(destination, 'snapshot.json'), canonicalJson(this.checkpointValue()));
+      writeNew(join(destination, 'journal-tail.json'), canonicalJson(this.tailValue()));
       syncDirectory(destination);
       return { ok: true, value: this.engine.snapshot() };
     });
