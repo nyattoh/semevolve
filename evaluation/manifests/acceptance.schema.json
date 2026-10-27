@@ -1,0 +1,274 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "P0 acceptance evidence ledger",
+  "description": "Structure only. A valid ledger is not proof of a successful mechanism test.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "stage",
+    "visibility",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "stage": {
+      "const": "P0"
+    },
+    "visibility": {
+      "const": "public_synthetic"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 34,
+      "maxItems": 34,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "at_id",
+          "title",
+          "owners",
+          "mechanism_verdict",
+          "isolation_verdict",
+          "head",
+          "evidence",
+          "limitation",
+          "not_run_reason"
+        ],
+        "properties": {
+          "at_id": {
+            "type": "string",
+            "pattern": "^AT-(0[1-9]|[12][0-9]|3[0-4])$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owners": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "C",
+                "R",
+                "P",
+                "T",
+                "E",
+                "L",
+                "I"
+              ]
+            }
+          },
+          "mechanism_verdict": {
+            "enum": [
+              "not_run",
+              "pass",
+              "fail",
+              "inconclusive"
+            ]
+          },
+          "isolation_verdict": {
+            "enum": [
+              "not_applicable",
+              "unverified",
+              "pass",
+              "fail"
+            ]
+          },
+          "head": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-f0-9]{40}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "command",
+                  "exit_code",
+                  "test_count",
+                  "input_digest",
+                  "artifact",
+                  "artifact_digest"
+                ],
+                "properties": {
+                  "command": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "exit_code": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "test_count": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "input_digest": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "artifact": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "artifact_digest": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "limitation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "not_run_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "mechanism_verdict": {
+                  "const": "not_run"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "head": {
+                  "type": "null"
+                },
+                "evidence": {
+                  "type": "null"
+                },
+                "not_run_reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "head": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{40}$"
+                },
+                "evidence": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "command",
+                    "exit_code",
+                    "test_count",
+                    "input_digest",
+                    "artifact",
+                    "artifact_digest"
+                  ],
+                  "properties": {
+                    "command": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "exit_code": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "test_count": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "input_digest": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "artifact": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifact_digest": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                "not_run_reason": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "at_id": {
+                  "const": "AT-19"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "isolation_verdict": {
+                  "enum": [
+                    "unverified",
+                    "pass",
+                    "fail"
+                  ]
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "isolation_verdict": {
+                  "const": "not_applicable"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "mechanism_verdict": {
+                  "const": "pass"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "evidence": {
+                  "type": "object",
+                  "properties": {
+                    "exit_code": {
+                      "const": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
