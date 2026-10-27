@@ -1,0 +1,30 @@
+# Dependencies / build output
+node_modules/
+dist/
+build/
+.turbo/
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+*.sqlite
+*.sqlite-*
+*.db
+
+# Evaluation data and run artifacts (never publish)
+evaluation/hidden/
+evaluation/answers/
+runs/
+.tombo/
+
+# Local-only document backups and archives
+document-backups/
+*.zip
