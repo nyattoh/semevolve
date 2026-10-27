@@ -1,0 +1,33 @@
+{
+  "name": "@semevolve/local-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b"
+  },
+  "dependencies": {
+    "@semevolve/core": "0.0.0",
+    "@semevolve/provider-adapters": "0.0.0",
+    "@semevolve/transport-adapters": "0.0.0",
+    "@semevolve/storage-planner": "0.0.0",
+    "@semevolve/language-registry": "0.0.0",
+    "@semevolve/tombo-bridge": "0.0.0",
+    "@semevolve/evaluator": "0.0.0",
+    "@semevolve/policy": "0.0.0"
+  }
+}

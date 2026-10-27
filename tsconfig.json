@@ -1,0 +1,35 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/provider-adapters"
+    },
+    {
+      "path": "packages/transport-adapters"
+    },
+    {
+      "path": "packages/storage-planner"
+    },
+    {
+      "path": "packages/language-registry"
+    },
+    {
+      "path": "packages/tombo-bridge"
+    },
+    {
+      "path": "packages/evaluator"
+    },
+    {
+      "path": "packages/policy"
+    },
+    {
+      "path": "apps/cli"
+    },
+    {
+      "path": "apps/local-ui"
+    }
+  ]
+}

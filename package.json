@@ -1,0 +1,37 @@
+{
+  "name": "semevolve",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "npm@10.9.4",
+  "workspaces": [
+    "packages/core",
+    "packages/provider-adapters",
+    "packages/transport-adapters",
+    "packages/storage-planner",
+    "packages/language-registry",
+    "packages/tombo-bridge",
+    "packages/evaluator",
+    "packages/policy",
+    "apps/cli",
+    "apps/local-ui"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tests/contracts/tsconfig.json",
+    "test:contracts": "npm run build && node --test tests/contracts/*.test.mjs",
+    "check:acceptance": "node scripts/check-acceptance.mjs",
+    "check:public-artifacts": "node scripts/check-public-artifacts.mjs",
+    "start:cli": "node apps/cli/dist/index.js",
+    "start:local-ui": "node apps/local-ui/dist/index.js"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.20.5",
+    "ajv": "8.20.0"
+  }
+}

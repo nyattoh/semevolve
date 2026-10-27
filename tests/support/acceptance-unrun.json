@@ -1,0 +1,454 @@
+{
+  "schema_version": "0.1",
+  "stage": "P0",
+  "visibility": "public_synthetic",
+  "entries": [
+    {
+      "at_id": "AT-01",
+      "title": "同じメッセージを二度配送",
+      "owners": [
+        "T"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "本番通信路の配送保証、実モデルの理解。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-02",
+      "title": "同じIDに違う本文",
+      "owners": [
+        "T"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "全ての外部transportの改ざん耐性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-03",
+      "title": "未知の言語版",
+      "owners": [
+        "R"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "未知言語をAIが習得する能力。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-04",
+      "title": "旧epochのメッセージ",
+      "owners": [
+        "R",
+        "T"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "自由な会話中の熱更新、実意味互換性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-05",
+      "title": "推測を確定として受信",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実モデルの不確実性理解・検出率。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-06",
+      "title": "二者が誤りに合意",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実世界の真偽判定、モデル間独立性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-07",
+      "title": "取得できない資料",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実資料取得の信頼性、欠落の網羅性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-08",
+      "title": "TOMBOの再考が未完了",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "TOMBOによる理解改善。SDK未実行なら接続部分はblocked。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-09",
+      "title": "証拠の撤回",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "外部の撤回を網羅的に検出する能力。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-10",
+      "title": "同じ観測の再配送",
+      "owners": [
+        "E",
+        "T"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "遠隔プロバイダの実行同定保証。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-11",
+      "title": "実際の検査再実行",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実モデル再試行の品質、請求確定。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-12",
+      "title": "期限後の再開",
+      "owners": [
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "長期の時計改変/全OS時刻障害への耐性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-13",
+      "title": "認証・費用経路が不明",
+      "owners": [
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実契約、認証・料金経路の適合確認。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-14",
+      "title": "並列呼出しで予算が不足",
+      "owners": [
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実料金・取消後請求。nullを0としない。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-15",
+      "title": "言語本文に実行命令を混入",
+      "owners": [
+        "P",
+        "T"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "あらゆるprompt injectionやOS sandboxへの耐性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-16",
+      "title": "候補版が過去例で退行",
+      "owners": [
+        "R"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "AIの改訂が未知例を改善する効果。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-17",
+      "title": "新参加者の自己申告だけ",
+      "owners": [
+        "R"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "新しい実モデルの習得能力。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-18",
+      "title": "実モデルfingerprintが変化",
+      "owners": [
+        "R"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実providerがfingerprintを開示するか、実性能の変化。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-19",
+      "title": "評価の正解への読取り",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "unverified",
+      "head": null,
+      "evidence": null,
+      "limitation": "公開fixtureの機構成功はOS隔離証明ではない。実OS権限/sandbox未検証なら隔離未達のまま。隠し評価正解をrepo/共有DBへ置かない。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-20",
+      "title": "本体保存先とTOMBO更新間で停止",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "doubleだけでは実TOMBO接続合格でない。二保存先の分散原子性は保証しない。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-21",
+      "title": "未取得のトークン・金額",
+      "owners": [
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "課金明細との照合、取得できない実費。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-22",
+      "title": "利用者の取消",
+      "owners": [
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "遠隔生成停止、無料化の保証。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-23",
+      "title": "長いが誤解の少ない候補",
+      "owners": [
+        "R"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実モデルで長い候補が有効か。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-24",
+      "title": "採点基準の試験中変更",
+      "owners": [
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "研究設計の統計的妥当性、H1〜H5。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-25",
+      "title": "原発話と派生単位・出来事の対応",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "任意言語への正しい自律分解。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-26",
+      "title": "言語版・規則版・保存版の組合せ違い",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "未知の言語/DBでの互換性。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-27",
+      "title": "保存取出しで否定・条件・不確実性等が欠落",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "意味一般の保持を自動証明する能力。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-28",
+      "title": "誤った主張を忠実に保存・伝達",
+      "owners": [
+        "L",
+        "E"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実世界の事実判定。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-29",
+      "title": "維持案とAI提案案の比較",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "AIによる提案生成・選択能力。fixtureをAI提案の実測と呼ばない。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-30",
+      "title": "影の移行で欠落・誤接続・未見検索失敗",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "公開queryは研究上の隠し未見集合ではない。本番移行性能。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-31",
+      "title": "コピー中の更新・切替競合・途中停止",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "本番DB固有の整合性、任意の障害環境。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-32",
+      "title": "切替後書込みがある状態で復帰",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "任意schema間の可逆性、本番復旧。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-33",
+      "title": "AIが任意DDL・削除を提案",
+      "owners": [
+        "L",
+        "P"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "本番DDL・削除権限は未承認、DB製品未選択。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    },
+    {
+      "at_id": "AT-34",
+      "title": "高速だが意味を欠落する検索",
+      "owners": [
+        "L"
+      ],
+      "mechanism_verdict": "not_run",
+      "isolation_verdict": "not_applicable",
+      "head": null,
+      "evidence": null,
+      "limitation": "実モデル/本番規模での性能改善。合成速度を一般性能としない。",
+      "not_run_reason": "S0は共有契約と骨格のみ。機構試験は未実装。"
+    }
+  ]
+}
