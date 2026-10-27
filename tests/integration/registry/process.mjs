@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import { openFileTaskStore } from '@semevolve/core';
+import { registryMutableCollections } from '@semevolve/language-registry';
+import { fixture, language, fingerprints, scope, take, epoch, request } from '../../mechanism/registry/fixtures.mjs';
+
+const [mode, directory] = process.argv.slice(2);
+const store = await openFileTaskStore(directory, { mutableCollections: registryMutableCollections });
+const f = fixture(store);
+if (mode === 'seed') {
+  const v1 = await f.activate();
+  take(await f.registry.selectHead(scope.scopeId, v1.version_id, 0));
+  take(await f.registry.nextEpoch(request()));
+  const v2 = await f.activate(language('language-v2', { parent_ids: [v1.version_id] }));
+  take(await f.registry.selectHead(scope.scopeId, v2.version_id, 1));
+  f.transition.change = p => ({ ...p, pendingMessageIds: ['message-held'], heldMessageIds: ['message-held'] });
+  take(await f.registry.nextEpoch(request(epoch('epoch-2', v2.version_id, 1), 'epoch-1', 1)));
+  take(await f.status(v1.version_id, 'RETIRED'));
+  take(await store.checkpoint());
+} else if (mode !== 'read') throw new Error('Unknown process mode');
+const v1 = take(await f.registry.get('language-v1'));
+const v2 = take(await f.registry.get('language-v2'));
+assert.deepEqual(v1, language());
+assert.deepEqual(v2, language('language-v2', { parent_ids: [v1.version_id] }));
+assert.deepEqual(take(await f.registry.head(scope.scopeId)), { scopeId: scope.scopeId, activeVersionId: v2.version_id, revision: 2 });
+assert.equal(take(await f.registry.getEpoch('epoch-1')).language.languageVersionId, v1.version_id);
+assert.notEqual(take(await f.registry.getEpoch('epoch-1')).sendsClosedAt, null);
+assert.deepEqual(take(await f.registry.getEpoch('epoch-2')), epoch('epoch-2', v2.version_id, 1));
+assert.deepEqual(take(await f.registry.statusEvents(v1.version_id)).map(e => e.status), ['CANDIDATE', 'TRIAL', 'ACTIVE', 'RETIRED']);
+assert.deepEqual(take(await f.registry.conformance(v2.version_id, fingerprints[0], scope.scopeId)).map(r => r.verdict), ['pass']);
+const resolved = take(await f.registry.resolveLanguage({ epochId: 'epoch-2', languageVersionId: v2.version_id, contextRevision: 1, fingerprint: fingerprints[0], digest: v2.digest }));
+assert.deepEqual(resolved, v2);
+const snapshot = take(await store.snapshot());
+await store.close();
+process.stdout.write(JSON.stringify({ pid: process.pid, revision: snapshot.revision, digest: snapshot.digest, entries: snapshot.entries.length }));
