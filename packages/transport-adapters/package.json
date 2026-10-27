@@ -18,7 +18,9 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test:local": "tsc -b ../../tests/mechanism/transport && node --test --test-reporter=tap ../../tests/mechanism/transport/*.test.mjs",
+    "test:durable": "node --test --test-reporter=tap ../../tests/integration/transport/*.test.mjs"
   },
   "dependencies": {
     "@semevolve/core": "0.0.0"
