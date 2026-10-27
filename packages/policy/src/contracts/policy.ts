@@ -34,11 +34,18 @@ export interface BudgetReservation {
     | { readonly kind: 'completed'; readonly usage: Usage };
 }
 
-export interface MeasuredTotal {
-  readonly knownSubtotal: number;
-  readonly missingCount: number;
-  readonly total: number | null;
-}
+export type MeasuredTotal =
+  | {
+    readonly kind: 'complete';
+    readonly total: number;
+    readonly missingInvocationIds?: never;
+  }
+  | {
+    readonly kind: 'partial';
+    readonly knownSubtotal: number;
+    readonly missingInvocationIds: readonly [InvocationId, ...InvocationId[]];
+    readonly total?: never;
+  };
 export interface UsageSummary {
   readonly invocations: number;
   readonly inputTokens: MeasuredTotal;
