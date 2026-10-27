@@ -18,7 +18,7 @@ for (const mode of ['no checkpoint', 'old checkpoint', 'header only', 'refused r
     const directory = await workspace(t);
     const first = await writer(t, directory);
     unwrap(await first.request('transact', batch()));
-    if (mode !== 'no checkpoint') unwrap(await first.request('checkpoint'));
+    if (mode === 'old checkpoint' || mode === 'refused result') unwrap(await first.request('checkpoint'));
     const response = await first.request('transact', mode === 'refused result'
       ? batch('refused', 0, [], []) : batch('two', 1, [insert('two', 'two')], [event('two')]));
     assert.equal(response.ok, mode !== 'refused result');
@@ -148,15 +148,23 @@ test('F1 direct overlapping last-unit reservation, a store CAS test only', { tim
   const server = await writer(t, directory);
   unwrap(await server.request('transact', batch('seed', 0, [insert({ remaining: 1 })], [])));
   const reserve = id => batch(id, 1, [replace({ remaining: 0 }, { remaining: 1 }), insert({ outcome: 'pending', cost: null }, id, 'reservations')], [event(id)]);
-  const { pids, results, trace } = await concurrentClients(t, server, [reserve('a'), reserve('b')]);
+  const requests = [reserve('a'), reserve('b')];
+  const { pids, results, trace } = await concurrentClients(t, server, requests);
   assertDirectOverlap(trace, pids);
   t.diagnostic(JSON.stringify({ pids, trace }));
   assert.equal(results.filter(result => result.ok).length, 1);
+  assert.deepEqual(results.find(result => !result.ok).error, { code: 'revision_conflict', expected: 1, actual: 2 });
   const snapshot = unwrap(await server.request('snapshot'));
   assert.equal(snapshot.entries.filter(entry => entry.key.collection === 'reservations').length, 1);
   assert.deepEqual(snapshot.entries.find(entry => entry.key.collection === 'state').value, { remaining: 0 });
   assert.deepEqual(snapshot.events, [event(results[0].ok ? 'a' : 'b')]);
   await server.request('close'); await server.exit;
+  const reopened = await writer(t, directory);
+  assert.equal(reopened.ready.type, 'ready');
+  assert.deepEqual(unwrap(await reopened.request('snapshot')), snapshot);
+  for (let index = 0; index < requests.length; index++) assert.deepEqual(await reopened.request('transact', requests[index]), results[index]);
+  assert.deepEqual(unwrap(await reopened.request('snapshot')), snapshot);
+  await reopened.request('close'); await reopened.exit;
 });
 
 for (const point of ['journal_before_append', 'journal_partial', 'journal_committed']) {
