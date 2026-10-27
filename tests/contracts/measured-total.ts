@@ -36,6 +36,8 @@ export function rejectIncompleteTotals() {
   const nullTotal: MeasuredTotal = { kind: 'complete', total: null };
   // @ts-expect-error A complete measurement cannot declare missing invocations.
   const missingComplete: MeasuredTotal = { ...complete, missingInvocationIds: [syntheticId('invocation')] };
+  // @ts-expect-error A complete measurement cannot carry missing invocations through structural assignment.
+  const widenedComplete: MeasuredTotal = Object.assign({}, complete, { missingInvocationIds: [syntheticId('invocation')] });
   // @ts-expect-error A partial measurement must identify at least one missing invocation.
   const emptyMissing: MeasuredTotal = { kind: 'partial', knownSubtotal: 7, missingInvocationIds: [] };
   // @ts-expect-error A count alone does not identify the missing measurements.
@@ -44,6 +46,6 @@ export function rejectIncompleteTotals() {
   const wrongIdentity: MeasuredTotal = { kind: 'partial', knownSubtotal: 7, missingInvocationIds: [syntheticId('message')] };
   // @ts-expect-error A partial measurement still requires its known subtotal.
   const noSubtotal: MeasuredTotal = { kind: 'partial', missingInvocationIds: [syntheticId('invocation')] };
-  void [legacy, fabricatedTotal, widenedTotal, nullTotal, missingComplete, emptyMissing,
+  void [legacy, fabricatedTotal, widenedTotal, nullTotal, missingComplete, widenedComplete, emptyMissing,
     countOnly, wrongIdentity, noSubtotal, completeZero, allMissing];
 }
