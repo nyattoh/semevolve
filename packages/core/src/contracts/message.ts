@@ -47,4 +47,4 @@ export interface EnvelopeContext {
 
 export type EnvelopeRejection = 'invalid_format' | 'oversize' | 'protocol_mismatch'
   | 'task_mismatch' | 'recipient_mismatch' | 'sender_mismatch' | 'participant_denied'
-  | 'epoch_mismatch' | 'context_mismatch' | 'language_mismatch' | 'expired';
+  | 'epoch_mismatch' | 'context_mismatch' | 'language_mismatch' | 'expired' | 'digest_mismatch';

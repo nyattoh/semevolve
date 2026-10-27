@@ -33,5 +33,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - run: npm run test:contracts
+      - run: npm run test:core
+      - run: npm run test:persistence
+      - run: npm run test:core-consumers
       - run: npm run check:acceptance
       - run: npm run check:public-artifacts
