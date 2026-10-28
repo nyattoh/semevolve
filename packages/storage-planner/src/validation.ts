@@ -12,6 +12,13 @@ export const same = (a: unknown, b: unknown): boolean => canonicalJson(a) === ca
 export const json = (v: unknown): JsonValue => JSON.parse(canonicalJson(v)) as JsonValue;
 export const rows = (s: StoreSnapshot, collection: string): readonly JsonValue[] => s.entries.filter(e => e.key.collection === collection).map(e => e.value);
 export const find = (s: StoreSnapshot, collection: string, id: string): JsonValue | undefined => s.entries.find(e => e.key.collection === collection && e.key.id === id)?.value;
+export function manifestUnitDigest(units: readonly DerivedUnit[]): ReturnType<typeof digestJson> {
+  const ordered = [...units].sort((left, right) => {
+    const a = canonicalJson(left), b = canonicalJson(right);
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+  return digestJson(ordered);
+}
 export class Refusal extends Error { constructor(readonly error: ContractError) { super(JSON.stringify(error)); } }
 export function invalid(issue: string): never { throw new Refusal({ code: 'invalid_input', issues: [issue] }); }
 export function unavailable(reason: string): never { throw new Refusal({ code: 'unavailable', reason }); }

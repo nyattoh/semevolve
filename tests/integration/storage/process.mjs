@@ -1,6 +1,7 @@
 import { openFileTaskStore, digestJson, inspectFileStoreOwner } from '@semevolve/core';
 import { migrationFixture, migrationRequest, checkedMigration, targetMapping } from '../../mechanism/storage/migration-fixtures.mjs';
 import { mapping, original, take } from '../../mechanism/storage/fixtures.mjs';
+import { generations } from '../../mechanism/storage/generation-fixtures.mjs';
 
 const directory = process.argv[2];
 const options = JSON.parse(process.argv[3]);
@@ -19,6 +20,7 @@ process.on('message', async ({ id, action, input = {} }) => {
     let result;
     switch (action) {
       case 'snapshot': result = await f.snapshot(); break;
+      case 'generations': result = await generations(f, input.oldLast); break;
       case 'head': result = await f.runtime.head(); break;
       case 'prepare': result = await f.runtime.migration.prepare(await migrationRequest(f)); break;
       case 'checked': result = await checkedMigration(f); break;

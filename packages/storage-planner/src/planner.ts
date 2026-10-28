@@ -6,6 +6,7 @@ import type { OriginalInput, RuleDefinition, StorageAdapter, StorageHead, Storag
 import * as v from './validation.js';
 import { compare, registerProposal } from './comparison.js';
 import { Migrations } from './migration.js';
+import { confirmedGeneration } from './generation.js';
 
 export const storageMutableCollections = ['storage.migrations', 'storage.heads'] as const;
 
@@ -202,10 +203,7 @@ export class Planner {
     const s = await this.snapshot();
     await this.verified(s, mapping);
     const head = this.headAt(s);
-    const generations = v.rows(s, 'storage.derived').filter(r => v.object(r) && r.mappingDigest === digestJson(mapping));
-    const generation = head?.mappingDigest === digestJson(mapping) ? head.generation : generations.at(-1);
-    const chosen = typeof generation === 'string' ? generation : v.object(generation) && v.text(generation.generation) ? generation.generation : null;
-    if (!chosen) return v.unavailable('Projection generation is unavailable');
+    const chosen = head?.mappingDigest === digestJson(mapping) ? head.generation : await confirmedGeneration(this, s, mapping);
     const units = this.projection(s, chosen, mapping);
     const selected = structuredClone(v.value(await this.adapter(s, mapping).retrieve(structuredClone(query), units, mapping)));
     if (!Array.isArray(selected) || selected.some(u => !units.some(source => v.same(u, source)))) v.invalid('Retrieval changed provenance');

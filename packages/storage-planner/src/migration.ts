@@ -1,17 +1,10 @@
-import { canonicalJson, digestJson, isUtcTimestamp } from '@semevolve/core';
+import { digestJson, isUtcTimestamp } from '@semevolve/core';
 import type { ExecutionId, StoreSnapshot } from '@semevolve/core';
-import type { DerivedUnit, Mapping, Migration, MigrationPort } from './contracts/storage.js';
+import type { Mapping, Migration, MigrationPort } from './contracts/storage.js';
 import type { OriginalInput, StorageHead } from './types.js';
 import type { Planner } from './planner.js';
 import * as v from './validation.js';
-
-function manifestUnitDigest(units: readonly DerivedUnit[]): ReturnType<typeof digestJson> {
-  const ordered = [...units].sort((left, right) => {
-    const a = canonicalJson(left), b = canonicalJson(right);
-    return a < b ? -1 : a > b ? 1 : 0;
-  });
-  return digestJson(ordered);
-}
+import { manifestUnitDigest } from './validation.js';
 
 interface Dataset { readonly originals: readonly OriginalInput[]; readonly references: readonly unknown[] }
 interface StateBase {
