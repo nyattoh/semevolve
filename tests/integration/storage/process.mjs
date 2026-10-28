@@ -2,18 +2,23 @@ import { openFileTaskStore, digestJson, inspectFileStoreOwner } from '@semevolve
 import { migrationFixture, migrationRequest, checkedMigration, targetMapping } from '../../mechanism/storage/migration-fixtures.mjs';
 import { mapping, original, take } from '../../mechanism/storage/fixtures.mjs';
 import { generations } from '../../mechanism/storage/generation-fixtures.mjs';
+import { legacyBatch } from '../../mechanism/storage/legacy-pending-fixtures.mjs';
 
 const directory = process.argv[2];
 const options = JSON.parse(process.argv[3]);
 let arm = null;
 let currentBatch = null;
+let legacyOperation = options.legacyOperation;
 const store = await openFileTaskStore(directory, { mutableCollections: ['registry.heads', 'registry.task-epochs', 'registry.epochs', 'storage.migrations', 'storage.heads'], async onBoundary(point) {
   if (!arm || point !== arm.point || !currentBatch?.events.some(e => e.kind === arm.kind)) return;
   const reached = arm; arm = null;
   process.send({ event: 'boundary', ...reached, pid: process.pid, transactionId: currentBatch.transactionId, batchDigest: digestJson(currentBatch), owner: inspectFileStoreOwner(directory) });
   await new Promise(() => {});
 } });
-const wrapped = { snapshot: () => store.snapshot(), close: () => store.close(), transact: batch => { currentBatch = batch; return store.transact(batch); } };
+const wrapped = { snapshot: () => store.snapshot(), close: () => store.close(), transact: batch => {
+  if (legacyOperation && batch.events.some(e => e.kind === `storage.${legacyOperation}.intent`)) { legacyOperation = null; batch = legacyBatch(batch); }
+  currentBatch = batch; return store.transact(batch);
+} };
 const f = await migrationFixture({ store: wrapped, seed: options.seed !== false });
 process.on('message', async ({ id, action, input = {} }) => {
   try {
