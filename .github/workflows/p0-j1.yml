@@ -60,6 +60,7 @@ jobs:
       - run: npm run check:acceptance
       - run: npm run check:public-artifacts
       - run: node -p "JSON.stringify({node:process.version,os:process.platform,execPath:process.execPath,head:process.env.GITHUB_SHA})"
+      - run: node --test --test-reporter=tap tests/integration/j1/partition.test.mjs
       - run: node --test tests/integration/j1/composition.test.mjs
       - run: node --test tests/integration/j1/restart.test.mjs
       - run: node --test tests/integration/j1/detection.test.mjs
