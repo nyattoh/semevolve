@@ -18,9 +18,15 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test:mechanism": "node --test ../../tests/mechanism/storage/*.test.mjs",
+    "test:persistence": "node --test ../../tests/integration/storage/*.test.mjs",
+    "test:consumers": "tsc -p ../../tests/mechanism/storage/tsconfig.json"
   },
   "dependencies": {
-    "@semevolve/core": "0.0.0"
+    "@semevolve/core": "0.0.0",
+    "@semevolve/evaluator": "0.0.0",
+    "@semevolve/language-registry": "0.0.0",
+    "@semevolve/policy": "0.0.0"
   }
 }
