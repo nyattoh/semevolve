@@ -1,7 +1,10 @@
+import { mkdtemp, mkdir, readdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { hostIdentity } from '@semevolve/core';
-import { createTomboBridge } from '@semevolve/tombo-bridge';
+import { createManagedSession, createTomboBridge } from '@semevolve/tombo-bridge';
 import { commit, fixture, input, update, value } from './support/fixture.mjs';
 
 test('AT10 receives one observation, reconciles actual execution proof and replays the exact summary', { timeout: 30000 }, async () => {
@@ -75,4 +78,28 @@ test('caller mutation cannot change the pending request committed before deliver
   assert.deepEqual(value(await pending), { executionId: original.executionId });
   assert.equal(f.state.session.updates[0].observations[0].toolCalls, 1);
   assert.equal(value(await f.store.snapshot()).entries.filter(e => e.key.collection === 'tombo.pending').length, 1);
+});
+
+for (const variant of ['equal', 'trailing-separator', 'dot-equivalent', 'runtime-parent', 'task-parent', 'allowed-equal', 'outside', 'sibling-control']) test(`E-B3 dedicated session boundary ${variant}`, { timeout: 30000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'semevolve-e-boundary-'));
+  let runtime = join(root, 'runtime'), directory = join(root, 'task'), allowed = root;
+  if (variant === 'equal') directory = runtime;
+  if (variant === 'trailing-separator') directory = runtime + sep;
+  if (variant === 'dot-equivalent') directory = runtime + sep + '.';
+  if (variant === 'runtime-parent') directory = join(runtime, 'task');
+  if (variant === 'task-parent') runtime = join(directory, 'runtime');
+  if (variant === 'allowed-equal') directory = allowed;
+  if (variant === 'outside') allowed = join(root, 'allowed');
+  for (const path of [runtime, directory, allowed]) await mkdir(path, { recursive: true });
+  const runtimeBefore = await readdir(runtime);
+  const taskBefore = await readdir(directory);
+  await assert.rejects(createManagedSession({ runtimeRoot: runtime, taskDirectory: directory, allowedTaskRoot: allowed, task: {}, taskClock: {}, readerId: 'evaluator', evidenceMetadata: [], propose: () => ({}) }), error => {
+    if (variant === 'sibling-control') {
+      assert.equal(error.code, 'ENOENT');
+      assert.ok(error.path.endsWith('LICENSE'));
+    } else assert.equal(error.message, 'Managed sessions require a separate dedicated temporary task directory');
+    return true;
+  });
+  assert.deepEqual(await readdir(runtime), runtimeBefore);
+  assert.deepEqual(await readdir(directory), taskBefore);
 });

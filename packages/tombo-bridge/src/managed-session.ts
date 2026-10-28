@@ -44,7 +44,7 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
   const directory = await realpath(options.taskDirectory);
   const allowed = await realpath(options.allowedTaskRoot);
   const tempRoots = await Promise.all([tmpdir(), ...(process.env.RUNNER_TEMP ? [process.env.RUNNER_TEMP] : [])].map(path => realpath(path)));
-  if (!tempRoots.some(root => root === allowed || inside(root, allowed)) || !inside(allowed, directory) || inside(runtime, directory) || inside(directory, runtime)) throw new Error('Managed sessions require a separate dedicated temporary task directory');
+  if (!tempRoots.some(root => root === allowed || inside(root, allowed)) || !inside(allowed, directory) || relative(runtime, directory) === '' || inside(runtime, directory) || inside(directory, runtime)) throw new Error('Managed sessions require a separate dedicated temporary task directory');
   if (resolve(options.taskDirectory).toLowerCase() !== directory.toLowerCase()) throw new Error('Task directory must use its canonical path');
   for (let path = dirname(directory); ; path = dirname(path)) {
     if (['tombo-session.jsonl', 'tombo-session.json', 'tombo-session.jsonl.lock'].some(name => existsSync(join(path, '.session', name)))) throw new Error('An ancestor already owns a TOMBO session');
