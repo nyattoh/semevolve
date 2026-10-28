@@ -157,3 +157,46 @@ for (const failure of ['result', 'throw', 'none']) test(`E-B1 ${failure} snapsho
     assert.equal(calls, 0);
   }
 });
+for (const stage of ['start-before-commit', 'start-after-commit', 'checker']) test(`E-B2 bounded duplicate during ${stage} replays the committed result without another reservation`, { timeout: 30000 }, async () => {
+  const host = await policyHost();
+  let entered, release;
+  const observed = new Promise(resolve => { entered = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  let calls = 0, starts = 0;
+  const budget = {
+    async start(binding) {
+      starts++;
+      if (stage === 'start-before-commit') { entered(); await barrier; }
+      const result = await host.budget.start(binding);
+      if (stage === 'start-after-commit') { entered(); await barrier; }
+      return result;
+    },
+    settle: input => host.budget.settle(input),
+  };
+  const observe = { async authorisation() { return { allowed: true }; }, async taskOutcome() { calls++; if (stage === 'checker') { entered(); await barrier; } return { finished: true }; } };
+  const f = fixture({ ...host, budget, observe, maxReadAttempts: 8 });
+  const req = await request(f, 'task_outcome');
+  const pending = f.runtime.evaluate(req);
+  await observed;
+  try {
+    const duplicate = await f.runtime.evaluate(structuredClone(req));
+    assert.equal(duplicate.ok, false);
+    assert.equal(duplicate.error.code, 'unavailable');
+    assert.equal(duplicate.error.reason, 'Execution is pending or unknown; no new start permitted');
+    assert.equal(starts, 1);
+    assert.equal(calls, stage === 'checker' ? 1 : 0);
+  } finally { release(); }
+  const first = value(await pending);
+  assert.equal(first.result.verdict, 'pass');
+  const before = value(await host.policy.snapshot(host.task.taskId));
+  const saved = value(await host.store.snapshot());
+  assert.deepEqual(value(await f.runtime.evaluate(req)), first);
+  const reopened = createEvaluator({ store: host.store, run: f.run, identity: host.identity, budget, observe, maxReadAttempts: 8 });
+  assert.deepEqual(value(await reopened.evaluate(structuredClone(req))), first);
+  assert.deepEqual(value(await host.store.snapshot()), saved);
+  const after = value(await host.policy.snapshot(host.task.taskId));
+  assert.deepEqual(after, before);
+  assert.equal(after.reservations.length, 1);
+  assert.equal(starts, 1);
+  assert.equal(calls, 1);
+});
