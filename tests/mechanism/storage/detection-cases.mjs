@@ -23,7 +23,7 @@ export const cases = [
   { id: 'cas', name: 'L6 stale expected revision cannot switch', marker: 'L6_CAS', async run() {
     const f = await migrationFixture();
     try { await checkedMigration(f); const result = await f.runtime.migration.switch({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision - 1, authorisationRef: 'grant-switch' });
-      assert.equal(result.ok, false, 'L6_CAS'); assert.equal(result.error.code, 'revision_conflict'); }
+      assert.equal(result.ok, false, 'L6_CAS'); assert.equal(result.error.code, 'revision_conflict', 'L6_CAS'); }
     finally { await f.store.close(); }
   } },
   { id: 'pending', name: 'L6 unreceipted intent remains pending', marker: 'L6_PENDING', async run() {
