@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readdir } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import assert from 'node:assert/strict';
@@ -81,7 +81,7 @@ test('caller mutation cannot change the pending request committed before deliver
 });
 
 for (const variant of ['equal', 'trailing-separator', 'dot-equivalent', 'runtime-parent', 'task-parent', 'allowed-equal', 'outside', 'sibling-control']) test(`E-B3 dedicated session boundary ${variant}`, { timeout: 30000 }, async () => {
-  const root = await mkdtemp(join(tmpdir(), 'semevolve-e-boundary-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'semevolve-e-boundary-')));
   let runtime = join(root, 'runtime'), directory = join(root, 'task'), allowed = root;
   if (variant === 'equal') directory = runtime;
   if (variant === 'trailing-separator') directory = runtime + sep;
