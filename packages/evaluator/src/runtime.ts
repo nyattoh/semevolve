@@ -77,14 +77,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const result = await log.insert('evaluator.runs', run.runId, { schema: 1, configuration: v.serialise(run) }, 'evaluator.run_fixed');
     return result.ok ? ok(undefined) : result;
   }
-  async function audit(kind: string, data: JsonValue): Promise<Result<void>> {
-    for (let i = 0; i < attempts; i++) {
-      const s = await options.store.snapshot(); if (!s.ok) return s;
-      const r = await log.append(s.value, [], kind, data);
-      if (r.ok || r.error.code !== 'revision_conflict') return r;
-    }
-    return unavailable('No progress saving rejection audit');
-  }
+  const audit = log.audit;
   async function reject<T>(reason: string, data: JsonValue): Promise<Result<T>> {
     const recorded = await audit('evaluator.rejected', { reason, request: data });
     return recorded.ok ? invalid(reason) : recorded;
@@ -119,7 +112,9 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || !v.same(request.interpretation, disclosed?.projection ?? answer.interpretation)) return reject('Independent committed interpretation mismatch', v.serialise(request));
     for (const ref of request.evidence) {
       const written = await log.insert('evaluator.evidence', ref.evidenceId, { schema: 1, evidence: v.serialise(ref) }, 'evaluator.evidence_registered');
-      if (!written.ok) return written;
+      if (!written.ok) return written.error.code === 'id_collision'
+        ? log.rejected(written.error, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, evidenceId: ref.evidenceId,
+          requestDigest: identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request })) }) : written;
     }
     const result = await executions.runCheck(request, 'evaluation', async (snapshot, signal) => {
       const started = performance.now();

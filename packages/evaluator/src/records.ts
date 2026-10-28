@@ -29,5 +29,22 @@ export function records(store: TaskStore, identity: HostIdentity, taskId: TaskId
     }
     return unavailable('No progress while committing evaluator record');
   }
-  return { append, insert };
+  async function audit(kind: string, data: JsonValue): Promise<Result<void>> {
+    for (let i = 0; i < attempts; i++) {
+      const s = await store.snapshot(); if (!s.ok) return s;
+      const r = await append(s.value, [], kind, data);
+      if (r.ok || r.error.code !== 'revision_conflict') return r;
+    }
+    return unavailable('No progress saving rejection audit');
+  }
+  async function rejected<T>(error: { readonly code: 'id_collision'; readonly id: string } | { readonly code: 'unavailable'; readonly reason: string }, data: JsonObject): Promise<Result<T>> {
+    try {
+      const result = await audit('evaluator.rejected', { ...data, error });
+      if (result.ok) return { ok: false, error };
+      return unavailable(`Rejection audit unconfirmed for ${error.code}: ${JSON.stringify(result.error)}`);
+    } catch (cause) {
+      return unavailable(`Rejection audit unconfirmed for ${error.code}: ${cause instanceof Error ? cause.message : 'Store failure'}`);
+    }
+  }
+  return { append, insert, audit, rejected };
 }

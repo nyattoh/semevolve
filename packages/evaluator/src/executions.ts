@@ -2,7 +2,7 @@ import { setImmediate } from 'node:timers/promises';
 import type { CheckExecution, HostIdentity, JsonValue, Result, StoreSnapshot, TaskStore, Usage } from '@semevolve/core';
 import type { EvaluationRequest, StorageCheckRequest, StorageCheckResult } from './contracts/evaluation.js';
 import type { EvaluatorOptions, EvaluatorRun } from './runtime.js';
-import { collision, ok, read, records, unavailable } from './records.js';
+import { ok, read, records, unavailable } from './records.js';
 import * as v from './validation.js';
 
 export interface ExecutionProduct { readonly result: CheckExecution | StorageCheckResult; readonly evidence: JsonValue; readonly usage: Usage }
@@ -11,12 +11,13 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
   const log = records(store, identity, run.taskId, attempts);
   async function runCheck(request: EvaluationRequest | StorageCheckRequest, kind: 'evaluation' | 'storage', judge: (snapshot: StoreSnapshot, signal: AbortSignal) => Promise<ExecutionProduct>): Promise<Result<CheckExecution | StorageCheckResult>> {
     const requestDigest = identity.digest(v.serialise({ runId: run.runId, kind, request }));
+    const rejection = { operation: kind === 'evaluation' ? 'evaluate' : 'evaluateStorage', runId: run.runId, executionId: request.executionId, requestDigest };
     let binding: Parameters<NonNullable<EvaluatorOptions['budget']>['start']>[0] | undefined;
     for (let i = 0; i < attempts; i++) {
       const state = await store.snapshot(); if (!state.ok) return state;
       const old = read(state.value, 'evaluator.requests', request.executionId);
       if (old) {
-        if (old.requestDigest !== requestDigest || old.runId !== run.runId || !v.same(old.request, request)) return collision(request.executionId);
+        if (old.requestDigest !== requestDigest || old.runId !== run.runId || !v.same(old.request, request)) return log.rejected({ code: 'id_collision', id: request.executionId }, rejection);
         const saved = read(state.value, kind === 'evaluation' ? 'evaluator.executions' : 'evaluator.storage-results', request.executionId);
         if (saved) {
           const product: unknown = saved.result;
@@ -35,7 +36,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
       binding = undefined;
       if (started.error.code !== 'revision_conflict') return started;
     }
-    if (!binding) return unavailable('Execution is pending or unknown; no new start permitted');
+    if (!binding) return log.rejected({ code: 'unavailable', reason: 'Execution is pending or unknown; no new start permitted' }, rejection);
     if (!budget) return unavailable('Budget start is unavailable; claimed execution remains pending');
     let reserved = false;
     const startedAt = performance.now();
