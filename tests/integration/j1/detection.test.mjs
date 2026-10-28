@@ -28,13 +28,17 @@ function run(mutant) {
   });
 }
 
-test('J1 mechanism detection distinguishes baseline, three assertion failures and restored baseline', { timeout: 30000 }, async t => {
-  const before = await hashes();
+const before = await hashes();
+
+test('J1 mechanism detection baseline', { timeout: 30000 }, async () => {
   const baseline = await run();
   assert.equal(baseline.code, 0, baseline.stdout + baseline.stderr);
   assert.match(baseline.stdout, /# pass 12\b/u);
   assert.match(baseline.stdout, /# skipped 0\b/u);
-  for (const [mutant, target] of [['registry', 'J1-04'], ['policy', 'J1-07'], ['replay', 'J1-02']]) {
+});
+
+for (const [mutant, target] of [['registry', 'J1-04'], ['policy', 'J1-07'], ['replay', 'J1-02']]) {
+  test(`J1 mechanism detection ${mutant} assertion`, { timeout: 30000 }, async t => {
     const result = await run(mutant);
     assert.equal(result.code, 1, result.stdout + result.stderr);
     assert.equal(result.signal, null);
@@ -52,7 +56,10 @@ test('J1 mechanism detection distinguishes baseline, three assertion failures an
     }
     assert.deepEqual(await hashes(), before);
     t.diagnostic(JSON.stringify({ kind: 'mechanism_detection', mutant, target, exit: result.code, signal: result.signal, assertion: 'ERR_ASSERTION' }));
-  }
+  });
+}
+
+test('J1 mechanism detection restored baseline', { timeout: 30000 }, async () => {
   const restored = await run();
   assert.equal(restored.code, 0, restored.stdout + restored.stderr);
   assert.match(restored.stdout, /# pass 12\b/u);
