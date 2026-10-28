@@ -173,7 +173,14 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const current = await options.store.snapshot(); if (!current.ok) return current;
     if (read(current.value, 'evaluator.withdrawal-reconciliation', identity.digest([id, true]))) return ok(undefined);
     const done = options.invalidateEvidence ? await options.invalidateEvidence(request) : unavailable('TOMBO invalidation not connected');
-    const recorded = await log.insert('evaluator.withdrawal-reconciliation', identity.digest([id, done.ok]), { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: done.ok, reason: done.ok ? null : v.serialise(done.error) }, 'evaluator.withdrawal_reconciled');
+    const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: done.ok, reason: done.ok ? null : v.serialise(done.error) };
+    if (!done.ok) {
+      const observed = await options.store.snapshot(); if (!observed.ok) return observed;
+      const legacy = read(observed.value, 'evaluator.withdrawal-reconciliation', identity.digest([id, false]));
+      if (legacy && v.same(legacy, observation)) return ok(undefined);
+    }
+    const observationId = identity.digest(done.ok ? [id, true] : [id, false, observation.reason]);
+    const recorded = await log.insert('evaluator.withdrawal-reconciliation', observationId, observation, 'evaluator.withdrawal_reconciled');
     return recorded.ok ? ok(undefined) : recorded;
   }
   async function readCheckEligibility(checkId: CheckId): Promise<Result<CheckEligibility>> {
