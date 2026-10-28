@@ -18,7 +18,9 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "node --test --test-reporter=tap test/reconciliation.test.mjs",
+    "test:sdk": "node test/support/run-sdk-tests.mjs"
   },
   "dependencies": {
     "@semevolve/core": "0.0.0"
