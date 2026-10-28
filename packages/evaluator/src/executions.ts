@@ -53,7 +53,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
         return start;
       }
       reserved = true;
-      const current = await store.snapshot(); if (!current.ok) return current;
+      const current = await store.snapshot(); if (!current.ok) throw new Error(`Store snapshot failed after budget start: ${JSON.stringify(current.error)}`);
       timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
       let removeAbort = () => {};
       const interrupted = new Promise<never>((_, reject) => {

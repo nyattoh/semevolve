@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture, identity, request, value } from './support/fixture.mjs';
+import { policyHost } from './support/policy.mjs';
 
 test('AT10 concurrent delivery returns one exact result and consumes one reservation', { timeout: 30000 }, async () => {
   let starts = 0, settlements = 0;
@@ -106,4 +107,53 @@ test('AT10 actual process reopen returns the identical execution, time and usage
   assert.deepEqual(second.snapshot, first.snapshot);
   assert.equal(second.execution.result.verdict, 'pass');
   assert.equal(second.execution.usage.costYen, null);
+});
+
+for (const failure of ['result', 'throw', 'none']) test(`E-B1 ${failure} snapshot after start retains accounting and records observed failure`, { timeout: 30000 }, async () => {
+  const host = await policyHost({ maxInvocations: 1 });
+  let armed = false, calls = 0;
+  const store = {
+    async snapshot() {
+      if (armed && failure !== 'none') {
+        armed = false;
+        if (failure === 'throw') throw new Error('Injected snapshot failure after successful start');
+        return { ok: false, error: { code: 'unavailable', reason: 'Injected snapshot failure after successful start' } };
+      }
+      return host.store.snapshot();
+    },
+    transact: input => host.store.transact(input),
+  };
+  const budget = { async start(binding) { const result = await host.budget.start(binding); if (result.ok) armed = true; return result; }, settle: input => host.budget.settle(input) };
+  const observe = { async authorisation() { return { allowed: true }; }, async taskOutcome() { calls++; return { finished: true }; } };
+  const f = fixture({ store, identity: host.identity, budget, observe });
+  const req = await request(f, 'task_outcome');
+  const result = await f.runtime.evaluate(req);
+  const accounting = value(await host.policy.snapshot(host.task.taskId));
+  assert.equal(accounting.reservations.length, 1);
+  assert.equal(accounting.reservations[0].outcome.kind, 'unknown_outcome');
+  assert.equal(accounting.usage.costYen.kind, 'partial');
+  const snapshot = value(await host.store.snapshot());
+  assert.equal(snapshot.entries.filter(e => e.key.collection === 'evaluator.requests').length, 1);
+  assert.equal(snapshot.entries.filter(e => e.key.collection === 'policy.starts').length, 1);
+  if (failure === 'none') {
+    assert.equal(value(result).result.verdict, 'pass');
+    assert.equal(calls, 1);
+  } else {
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, 'unavailable');
+    assert.equal(calls, 0);
+    assert.equal(snapshot.entries.filter(e => e.key.collection === 'evaluator.executions').length, 0);
+    assert.equal(snapshot.events.some(e => e.kind === 'evaluator.unknown_outcome' && e.data.executionId === req.executionId), true);
+    assert.equal((await f.runtime.evaluate(req)).error.code, 'unavailable');
+    const reopened = createEvaluator({ store, run: f.run, identity: host.identity, budget, observe });
+    assert.equal((await reopened.evaluate(req)).error.code, 'unavailable');
+    const retained = value(await host.policy.snapshot(host.task.taskId));
+    assert.deepEqual(retained.reservations, accounting.reservations);
+    assert.deepEqual(retained.usage, accounting.usage);
+    assert.equal(calls, 0);
+    const fresh = await reopened.evaluate({ ...req, executionId: identity.newId('execution') });
+    assert.equal(fresh.ok, false);
+    assert.equal(value(await host.policy.snapshot(host.task.taskId)).reservations.length, 1);
+    assert.equal(calls, 0);
+  }
 });
