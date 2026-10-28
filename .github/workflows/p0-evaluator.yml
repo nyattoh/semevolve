@@ -26,7 +26,32 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm install --global npm@10.9.4 --ignore-scripts --no-audit --no-fund
+      - name: Bootstrap pinned npm from the selected Node distribution
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, existsSync, mkdtempSync, realpathSync } from 'node:fs';
+          import { dirname, join, resolve } from 'node:path';
+          import { spawnSync } from 'node:child_process';
+          const node = realpathSync(process.execPath);
+          const bundled = process.platform === 'win32'
+            ? join(dirname(node), 'node_modules/npm/bin/npm-cli.js')
+            : resolve(dirname(node), '../lib/node_modules/npm/bin/npm-cli.js');
+          assert.ok(existsSync(bundled), 'Selected Node distribution must contain npm');
+          const prefix = mkdtempSync(join(realpathSync(process.env.RUNNER_TEMP), 'semevolve-npm-'));
+          const installed = spawnSync(node, [bundled, 'install', '--prefix', prefix, '--global=false', '--no-save', '--package-lock=false', '--ignore-scripts', '--no-audit', '--no-fund', 'npm@10.9.4'], { stdio: 'inherit' });
+          assert.equal(installed.error, undefined);
+          assert.equal(installed.status, 0);
+          const cli = join(prefix, 'node_modules/npm/bin/npm-cli.js');
+          const version = spawnSync(node, [cli, '--version'], { encoding: 'utf8' });
+          assert.equal(version.status, 0, version.stderr);
+          assert.equal(version.stdout.trim(), '10.9.4');
+          const bin = join(prefix, 'node_modules/.bin');
+          assert.ok(existsSync(join(bin, process.platform === 'win32' ? 'npm.cmd' : 'npm')));
+          appendFileSync(process.env.GITHUB_PATH, `${bin}\n`);
+          console.log(JSON.stringify({ node: process.version, platform: process.platform, bundled, npm: version.stdout.trim(), bin }));
+          NODE
       - run: node --version
       - run: npm --version
       - run: npm ci --ignore-scripts --no-audit --no-fund
