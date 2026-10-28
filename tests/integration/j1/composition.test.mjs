@@ -91,7 +91,12 @@ test('J1-03 same message ID with a different body is refused and audited', { tim
 test('J1-04 unknown language, acquisition digest mismatch and quarantine refuse the inner receive', { timeout: 30000 }, async t => {
   for (const variant of ['quarantine', 'unknown', 'digest']) {
     const host = await setup(t);
-    denied(await host.registry.nextEpoch({ taskId, previousEpochId: 'j1-epoch', epoch: epoch('unknown-epoch', 'missing-version', 1), expectedRevision: 1 }), 'invalid_input');
+    host.transition.previousSendsClosed = true;
+    const before = await host.snapshot();
+    const unknown = await host.registry.nextEpoch({ taskId, previousEpochId: 'j1-epoch', epoch: epoch('unknown-epoch', 'missing-version', 1), expectedRevision: 1 });
+    denied(unknown, 'invalid_input');
+    assert.deepEqual(unknown.error.issues, ['Active version in the target scope required']);
+    assert.deepEqual(await host.snapshot(), before);
     const e = envelope(variant === 'unknown' ? { language_version_id: 'missing-version' } : {});
     if (variant === 'digest') host.acquired.get('peer-b').digest = digestJson('wrong acquired content');
     if (variant === 'quarantine') take(await host.status('j1-language', 'QUARANTINED'));
@@ -102,6 +107,12 @@ test('J1-04 unknown language, acquisition digest mismatch and quarantine refuse 
     denied(inner[0], 'transport_refused', variant === 'unknown' ? 'language_mismatch' : 'language_unavailable');
     await unapplied(host);
   }
+  const known = await setup(t);
+  known.transition.previousSendsClosed = true;
+  const next = epoch('known-epoch', 'j1-language', 1);
+  assert.deepEqual(take(await known.registry.nextEpoch({ taskId, previousEpochId: 'j1-epoch', epoch: next, expectedRevision: 1 })), next);
+  assert.deepEqual(take(await known.registry.getEpoch('known-epoch')), next);
+  assert.equal(take(await known.registry.getEpoch('j1-epoch')).sendsClosedAt, initialTime);
   const allowed = await setup(t);
   await allowed.deliverAndApply();
   assert.equal(rows(await allowed.snapshot(), 'transport.applications').length, 1);
