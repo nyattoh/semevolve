@@ -243,12 +243,12 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || !v.same(execution.result.evidenceIds, [...req.evidence.map(e => e.evidenceId), `observation-${execution.executionId}`])) throw new Error('Canonical referenced check linkage is invalid');
     for (const evidenceId of execution.result.evidenceIds) {
       const evidence = read(snapshot, 'evaluator.evidence', evidenceId)?.evidence;
-      if (!v.evidence(evidence) || evidence.evidenceId !== evidenceId
-        || evidence.scope !== run.scope || !evidence.allowedReaders.includes(configuration.evaluatorId)
-        || evidence.content.kind === 'retrieved' && bodyDigest(evidence.content.body) !== evidence.content.digest) throw new Error('Canonical referenced evidence is unavailable');
+      if (!v.evidence(evidence) || evidence.evidenceId !== evidenceId) throw new Error('Canonical referenced evidence is unavailable');
       const supplied = req.evidence.find(e => e.evidenceId === evidenceId);
       if (supplied && !v.same(supplied, evidence)) throw new Error('Canonical referenced evidence differs from the request');
-      if (!supplied && (evidence.content.kind !== 'retrieved' || evidence.content.retrievedAt !== execution.performedAt)) throw new Error('Canonical referenced observation is invalid');
+      if (!supplied && (evidence.scope !== run.scope || !evidence.allowedReaders.includes(configuration.evaluatorId)
+        || evidence.content.kind !== 'retrieved' || evidence.content.retrievedAt !== execution.performedAt
+        || bodyDigest(evidence.content.body) !== evidence.content.digest)) throw new Error('Canonical referenced observation is invalid');
     }
     return { runId: source.runId, evidenceIds: execution.result.evidenceIds };
   }
