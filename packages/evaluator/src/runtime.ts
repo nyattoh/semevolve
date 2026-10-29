@@ -5,8 +5,9 @@ import { collision, invalid, ok, read, records, unavailable } from './records.js
 import * as v from './validation.js';
 import { compare, conditions, retrieval, storageConditions } from './conditions.js';
 import { bodyDigest, checkSources } from './evidence.js';
-import { executionLog } from './executions.js';
-import { judgeProjection, storageInput } from './storage-projection.js';
+import { executionLog, storageResult } from './executions.js';
+import { judgeProjection, projectionOriginals, storageInput } from './storage-projection.js';
+import type { ProjectionOriginal } from './storage-projection.js';
 
 export interface EvaluatorRun {
   readonly runId: string;
@@ -219,6 +220,103 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       reason: affected.length ? 'Evidence withdrawn; a new execution ID is required' : invalidated ? 'Comparison run invalidated' : execution.result.verdict !== 'pass' ? 'Check did not pass' : null,
       runId: run.runId, testSetDigest: run.testSetDigest, execution: structuredClone(execution), request: structuredClone(source.request), tomboInvalidationPending: pending });
   }
+  function referencedStorageCheck(snapshot: StoreSnapshot, checkId: string, original: ProjectionOriginal): { runId: string; evidenceIds: readonly string[] } {
+    const matches = snapshot.entries.filter(e => e.key.collection === 'evaluator.executions' && v.record(e.value) && v.execution(e.value.result) && e.value.result.result.checkId === checkId);
+    if (matches.length !== 1) throw new Error('Canonical referenced check is missing or ambiguous');
+    const saved = read(snapshot, 'evaluator.executions', matches[0]!.key.id);
+    if (!saved || !v.execution(saved.result)) throw new Error('Invalid canonical referenced check');
+    const execution = saved.result;
+    const source = read(snapshot, 'evaluator.requests', execution.executionId);
+    if (!source || !v.text(source.runId) || !evaluationRequest(source.request)) throw new Error('Canonical referenced request is unavailable');
+    const req = source.request;
+    const configuration = read(snapshot, 'evaluator.runs', source.runId)?.configuration;
+    if (!validRun(configuration) || configuration.runId !== source.runId || source.kind !== 'evaluation'
+      || execution.executionId !== matches[0]!.key.id || req.executionId !== execution.executionId
+      || source.requestDigest !== saved.requestDigest || source.requestDigest !== identity.digest(v.serialise({ runId: source.runId, kind: 'evaluation', request: req }))
+      || req.taskId !== run.taskId || execution.taskId !== run.taskId || configuration.taskId !== run.taskId
+      || req.scope !== run.scope || execution.result.scope !== run.scope || configuration.scope !== run.scope
+      || req.targetMessageId !== original.messageId || execution.result.targetMessageId !== original.messageId
+      || req.languageVersionId !== original.languageVersionId || execution.result.languageVersionId !== original.languageVersionId || configuration.languageVersionId !== original.languageVersionId
+      || req.criteriaDigest !== configuration.criteriaDigest || req.evaluatorVersion !== configuration.evaluatorVersion || execution.result.evaluatorVersion !== configuration.evaluatorVersion
+      || req.dimension !== execution.result.dimension || req.inputDigest !== execution.inputDigest || req.inputDigest !== identity.digest(evaluationInput(req))
+      || !v.record(configuration.expectedConditions) || !v.same(req.expectedConditions, configuration.expectedConditions[req.dimension])
+      || !v.same(execution.result.evidenceIds, [...req.evidence.map(e => e.evidenceId), `observation-${execution.executionId}`])) throw new Error('Canonical referenced check linkage is invalid');
+    for (const evidenceId of execution.result.evidenceIds) {
+      const evidence = read(snapshot, 'evaluator.evidence', evidenceId)?.evidence;
+      if (!v.evidence(evidence) || evidence.evidenceId !== evidenceId
+        || evidence.scope !== run.scope || !evidence.allowedReaders.includes(configuration.evaluatorId)
+        || evidence.content.kind === 'retrieved' && bodyDigest(evidence.content.body) !== evidence.content.digest) throw new Error('Canonical referenced evidence is unavailable');
+      const supplied = req.evidence.find(e => e.evidenceId === evidenceId);
+      if (supplied && !v.same(supplied, evidence)) throw new Error('Canonical referenced evidence differs from the request');
+      if (!supplied && (evidence.content.kind !== 'retrieved' || evidence.content.retrievedAt !== execution.performedAt)) throw new Error('Canonical referenced observation is invalid');
+    }
+    return { runId: source.runId, evidenceIds: execution.result.evidenceIds };
+  }
+  function storageFreshness(snapshot: StoreSnapshot, evidenceIds: ReadonlySet<string>, runIds: ReadonlySet<string>): { withdrawn: boolean; invalidated: boolean; pending: boolean } {
+    let withdrawn = false;
+    let pending = false;
+    let invalidated = false;
+    for (const entry of snapshot.entries) {
+      if (entry.key.collection === 'evaluator.run-invalidations') {
+        const record = read(snapshot, entry.key.collection, entry.key.id);
+        if (!record || !v.text(record.runId)) throw new Error('Invalid run invalidation');
+        if (runIds.has(record.runId)) invalidated = true;
+      }
+      if (entry.key.collection !== 'evaluator.withdrawals') continue;
+      const record = read(snapshot, entry.key.collection, entry.key.id);
+      if (!record || !v.text(record.evidenceId) || !v.text(record.reason) || !isUtcTimestamp(record.withdrawnAt)) throw new Error('Invalid withdrawal record');
+      if (!evidenceIds.has(record.evidenceId)) continue;
+      if (entry.key.id !== identity.digest({ evidenceId: record.evidenceId, reason: record.reason, withdrawnAt: record.withdrawnAt })) throw new Error('Withdrawal identity mismatch');
+      withdrawn = true;
+      const applied = read(snapshot, 'evaluator.withdrawal-reconciliation', identity.digest([entry.key.id, true]));
+      if (!applied) pending = true;
+      else if (applied.withdrawalId !== entry.key.id || applied.evidenceId !== record.evidenceId || applied.applied !== true || applied.reason !== null) throw new Error('Invalid withdrawal reconciliation');
+    }
+    return { withdrawn, invalidated, pending };
+  }
+  async function readStorageCheckEligibility(executionId: ExecutionId): Promise<Result<StorageCheckEligibility>> {
+    if (!v.text(executionId)) return invalid('Invalid storage execution ID');
+    const snapshot = await options.store.snapshot(); if (!snapshot.ok) return snapshot;
+    const s = snapshot.value;
+    const source = read(s, 'evaluator.requests', executionId);
+    const saved = read(s, 'evaluator.storage-results', executionId);
+    const configuration = read(s, 'evaluator.runs', run.runId)?.configuration;
+    if (!source || !storageRequest(source.request) || !saved || !storageResult(saved.result) || !v.usage(saved.usage)
+      || !v.same(configuration, run)) return unavailable('Canonical storage records are unavailable');
+    const req = source.request;
+    const result = saved.result;
+    const rules = req.expectedConditions;
+    if (source.kind !== 'storage' || source.runId !== run.runId || req.executionId !== executionId || result.executionId !== executionId
+      || req.taskId !== run.taskId || req.scope !== run.scope || result.scope !== req.scope
+      || req.criteriaDigest !== run.criteriaDigest || result.criteriaDigest !== req.criteriaDigest
+      || req.evaluatorVersion !== run.evaluatorVersion || result.evaluatorVersion !== req.evaluatorVersion
+      || req.inputDigest !== identity.digest(storageInput(req)) || result.inputDigest !== req.inputDigest
+      || source.requestDigest !== saved.requestDigest || source.requestDigest !== identity.digest(v.serialise({ runId: run.runId, kind: 'storage', request: req }))
+      || !storageConditions(rules) || !v.same(rules, expected.storage)
+      || !v.same(result.evidenceIds, [`observation-${executionId}`])) return unavailable('Canonical storage request and result linkage is invalid');
+    const evidence = read(s, 'evaluator.evidence', `observation-${executionId}`)?.evidence;
+    if (!v.same(evidence, { evidenceId: `observation-${executionId}`, kind: 'synthetic-storage-observation', original: req.original, retrieved: req.retrieved })) return unavailable('Canonical storage observation is unavailable');
+    const judgement = rules.kind === 'storage-projection-v1' ? judgeProjection(req, rules) : {
+      literalRestoration: v.same(req.original, req.retrieved) ? 'pass' : 'fail',
+      meaningPreservation: compare(req.retrieved, rules.meaning), retrievalCorrectness: retrieval(req.retrieved, rules.retrieval),
+    };
+    if (result.literalRestoration !== judgement.literalRestoration || result.meaningPreservation !== judgement.meaningPreservation || result.retrievalCorrectness !== judgement.retrievalCorrectness) return unavailable('Canonical storage verdicts do not match the observation');
+    const evidenceIds = new Set<string>(result.evidenceIds);
+    const runIds = new Set([run.runId]);
+    if (rules.kind === 'storage-projection-v1') {
+      const originals = projectionOriginals(req);
+      if (originals.kind === 'valid') for (const original of originals.originals) for (const checkId of original.checkRefs) {
+        const referenced = referencedStorageCheck(s, checkId, original);
+        runIds.add(referenced.runId);
+        for (const evidenceId of referenced.evidenceIds) evidenceIds.add(evidenceId);
+      }
+    }
+    const freshness = storageFreshness(s, evidenceIds, runIds);
+    const passed = [result.literalRestoration, result.meaningPreservation, result.retrievalCorrectness].every(verdict => verdict === 'pass');
+    return ok({ eligible: passed && !freshness.withdrawn && !freshness.invalidated, recheckRequired: freshness.withdrawn || freshness.invalidated,
+      reason: freshness.withdrawn ? 'Evidence withdrawn; a new execution ID is required' : freshness.invalidated ? 'Comparison run invalidated' : !passed ? 'Storage checks did not all pass' : null,
+      runId: run.runId, testSetDigest: run.testSetDigest, request: structuredClone(req), result: structuredClone(result), tomboInvalidationPending: freshness.pending });
+  }
   async function captureInput(input: CaptureInput): Promise<Result<JsonValue>> {
     const copy = v.serialise(input);
     if (!v.record(copy) || !v.text(copy.messageId) || !v.text(copy.receiverId) || !v.json(copy.payload) || !v.json(copy.sharedContext)) return invalid('Invalid capture');
@@ -272,7 +370,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     return unavailable('No progress committing disclosure');
   }
   return {
-    readStorageCheckEligibility: boundary(async (_executionId: ExecutionId) => unavailable<StorageCheckEligibility>('Storage eligibility is not connected')),
+    readStorageCheckEligibility: boundary(readStorageCheckEligibility),
     captureInput: boundary(captureInput), recordAnswer: boundary(recordAnswer), recordDisclosure: boundary(recordDisclosure),
     evaluate: boundary(evaluate), evaluateStorage: boundary(evaluateStorage), withdraw: boundary(withdraw), readCheckEligibility: boundary(readCheckEligibility),
   };
@@ -297,4 +395,12 @@ function storageRequest(x: unknown): x is StorageCheckRequest {
 }
 function evaluationInput(request: EvaluationRequest): JsonValue {
   return v.serialise({ taskId: request.taskId, targetMessageId: request.targetMessageId, languageVersionId: request.languageVersionId, dimension: request.dimension, interpretation: request.interpretation, evidence: request.evidence, scope: request.scope });
+}
+function validRun(value: unknown): value is EvaluatorRun {
+  if (!v.object(value) || ![value.runId, value.taskId, value.languageVersionId, value.evaluatorVersion, value.scope, value.evaluatorId].every(v.text)
+    || !v.digest(value.criteriaDigest) || !v.digest(value.testSetDigest) || value.synthetic !== true || value.checkerId !== 'conditions-v1'
+    || !v.record(value.expectedConditions)) return false;
+  const expected = value.expectedConditions;
+  return ['transmission', 'factuality', 'authorisation', 'task_outcome'].every(d => conditions(expected[d]))
+    && storageConditions(expected.storage) && hostIdentity.digest(expected) === value.criteriaDigest;
 }
