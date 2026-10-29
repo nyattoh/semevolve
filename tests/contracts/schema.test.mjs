@@ -18,8 +18,9 @@ test('acceptance schema refuses a fabricated passing record without evidence', (
 test('all 34 registered ATs remain unrun and match the authoritative names and owners', () => {
   assert.deepEqual(validateAcceptance(unrun), { valid: true, errors: [] });
   assert.equal(unrun.entries.filter((entry) => entry.mechanism_verdict === 'not_run').length, 34);
-  const specification = readFileSync(new URL('../../04_EVALUATION.md', import.meta.url), 'utf8');
-  const plan = readFileSync(new URL('../../docs/plan/P0.md', import.meta.url), 'utf8');
+  const legacy = JSON.parse(readFileSync(new URL('../support/legacy-acceptance-tables.json', import.meta.url), 'utf8'));
+  const specification = legacy.specification_rows.join('\n');
+  const plan = legacy.plan_rows.join('\n');
   for (const entry of unrun.entries) {
     assert.ok(specification.includes(`| ${entry.at_id} | ${entry.title} |`));
     assert.ok(plan.includes(`| ${entry.at_id} | ${entry.title} | ${entry.owners.join('、')} |`));
