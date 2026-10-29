@@ -178,10 +178,10 @@ export class Planner {
     const s = await this.snapshot();
     await this.registered(s, mapping);
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
-    const captured = await this.inspectionInput(s, [mapping], originals);
+    const captured = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const units = await this.project(s, mapping, originals);
     const checks = await this.inspect(s, mapping, originals, units);
-    const final = await this.revalidateInspection(captured, checks);
+    const final = captured ? await this.revalidateInspection(captured, checks) : s;
     await this.commit(final, checks.map(c => this.insert('storage.inspections', c.checkId, c)), 'inspected', { mappingId: mapping.mappingId, checkIds: checks.map(c => c.checkId) });
     return checks;
   }
@@ -191,7 +191,7 @@ export class Planner {
     await this.registered(s, mapping);
     if (!v.unique(ids) || ids.length !== this.options.comparison.queries.length || ids.length === 0) v.invalid('Missing real storage inspection checks');
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
-    const inputState = await this.inspectionInput(s, [mapping], originals);
+    const inputState = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const checks: StorageInspection[] = [];
     for (const id of ids) {
       const c = v.find(s, 'storage.inspections', id);
@@ -202,7 +202,7 @@ export class Planner {
       if (!this.passing(c.result as unknown as StorageCheckResult)) v.unavailable('Storage combination is not independently verified');
       checks.push(c as unknown as StorageInspection);
     }
-    const final = await this.revalidateInspection(inputState, checks);
+    const final = inputState ? await this.revalidateInspection(inputState, checks) : s;
     await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion });
   }
   passing(result: StorageCheckResult): boolean { return result.literalRestoration === 'pass' && result.meaningPreservation === 'pass' && result.retrievalCorrectness === 'pass'; }

@@ -34,7 +34,7 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
       || proposal.querySetDigest !== digestJson(plan.queries) || proposal.budgetRef !== plan.budgetRef || !v.same(proposal.queryExamples, plan.queries)) v.invalid('Unequal or unregistered comparison conditions');
     await p.registered(s, proposal.mapping);
   }
-  const input = await p.inspectionInput(s, [baseline.mapping, candidate.mapping], originals);
+  const input = p.options.inspectionEligibility ? await p.inspectionInput(s, [baseline.mapping, candidate.mapping], originals) : null;
   const conditions = { languageVersionId: baseline.languageVersionId, originalSetDigest: digestJson(originals), querySetDigest: digestJson(plan.queries),
     budgetRef: plan.budgetRef, budget: plan.budget, criteriaDigest: plan.criteriaDigest, evaluatorVersion: plan.evaluatorVersion,
     environmentRef: plan.environmentRef, cacheCondition: plan.cacheCondition, order: ['baseline', 'candidate'], scope: p.options.scope };
@@ -64,7 +64,7 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
   const result: StorageComparison = { executionId: p.identity.newId('execution'), baselineProposalId: baseline.proposalId, candidateProposalId: candidate.proposalId,
     languageVersionId: baseline.languageVersionId, originalSetDigest: digestJson(originals), querySetDigest: digestJson(plan.queries), budgetRef: plan.budgetRef,
     criteriaDigest: plan.criteriaDigest, measurements, checkRefs, limitation: `${plan.measurement.kind} timings; public synthetic checks; null counts, index bytes, token and cost values are unmeasured; no production performance or adoption authority` };
-  const final = await p.revalidateInspection(input, inspections);
+  const final = input ? await p.revalidateInspection(input, inspections) : s;
   await p.commit(final, [...inspections.map(c => p.insert('storage.inspections', c.checkId, c)), p.insert('storage.comparisons', result.executionId,
     { result, conditions, conditionsDigest: digestJson(conditions), selectedProposalId: baselinePass ? baseline.proposalId : null,
       candidateEligible: candidatePass, reason: baselinePass ? 'Maintain meets fixed semantic criteria; structural change is not required' : 'No verified maintain result; current head remains unchanged' })], 'compared', { executionId: result.executionId, checkRefs });
