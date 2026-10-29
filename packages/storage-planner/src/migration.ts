@@ -70,19 +70,19 @@ export class Migrations {
         && record.migration.pendingOperation !== null) v.unavailable('Scope has an operation requiring reconciliation');
     }
   }
-  intent(s: StoreSnapshot, state: StateBase, operation: Operation, executionId: ExecutionId, ref: string, policyRevision: number): unknown {
+  intent(s: StoreSnapshot, state: StateBase, operation: Operation, executionId: ExecutionId, ref: string, policyRevision: number, inspectionDigest = this.inspectionDigest()): unknown {
     return { kind: 'intent', operation, executionId, migrationId: state.migration.migrationId, taskId: this.p.options.taskId, scope: state.scope,
       expectedRevision: s.revision, snapshotDigest: s.digest, sourceHeadDigest: digestJson(state.sourceHead), datasetDigest: state.datasetDigest,
       inputDigest: digestJson({ migration: state.migration, dataset: state.dataset, sourceHead: state.sourceHead, ref, policyRevision }), authorisationRef: ref, policyRevision,
-      inspectionDigest: this.inspectionDigest() };
+      inspectionDigest };
   }
   inspectionDigest(): string {
     const plan = this.p.options.comparison;
     return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions, criteriaDigest: plan.criteriaDigest, evaluatorVersion: plan.evaluatorVersion });
   }
-  intentHistory(s: StoreSnapshot, state: State, operation: Operation, ref: string, policyRevision: number): unknown {
+  intentHistory(s: StoreSnapshot, state: State, operation: Operation, ref: string, policyRevision: number, inspectionDigest = this.inspectionDigest()): unknown {
     return { intent: state.intent, migrationId: state.migration.migrationId, head: operation === 'restore' ? state.restoreSourceHead : state.sourceHead,
-      stateDigest: digestJson(state), intentDigest: digestJson(this.intent(s, state, operation, state.intent, ref, policyRevision)) };
+      stateDigest: digestJson(state), intentDigest: digestJson(this.intent(s, state, operation, state.intent, ref, policyRevision, inspectionDigest)) };
   }
   fence(s: StoreSnapshot, state: State, expectedRevision: number): void {
     if (!v.same(v.find(s, 'storage.migrations', state.migration.migrationId), state)) {
@@ -174,13 +174,15 @@ export class Migrations {
       || intent.datasetDigest !== state.datasetDigest || !v.text(intent.authorisationRef) || !v.integer(intent.policyRevision)
       || intent.inputDigest !== digestJson({ migration: state.migration, dataset: state.dataset, sourceHead: state.sourceHead, ref: intent.authorisationRef, policyRevision: intent.policyRevision })
       || v.find(s, 'storage.operations', `${state.intent}/receipt`) !== undefined
-      || v.find(s, 'storage.operations', `${state.intent}/not-applied`) !== undefined) return v.unavailable('Pending intent cannot be proved unapplied');
+      || v.find(s, 'storage.operations', `${state.intent}/not-applied`) !== undefined
+      || v.rows(s, 'storage.operations').some(r => v.object(r) && ['receipt', 'not_applied'].includes(String(r.kind)) && r.executionId === state.intent)) return v.unavailable('Pending intent cannot be proved unapplied');
     const history = s.events.filter(e => e.kind === `storage.${operation}.intent` && e.taskId === p.options.taskId
       && v.object(e.data) && e.data.intent === state.intent && e.data.migrationId === state.migration.migrationId);
     if (history.length !== 1 || history[0]!.actor !== 'host' || !v.object(history[0]!.data)) return v.unavailable('Pending intent lacks matching immutable history');
     const data = history[0]!.data;
     const modern = Object.hasOwn(data, 'intentDigest') || Object.hasOwn(data, 'stateDigest');
-    if (modern && (data.intentDigest !== digestJson(intent) || data.stateDigest !== digestJson(state))) return v.unavailable('Pending intent and state lack matching immutable history');
+    if (modern && (data.intentDigest !== digestJson(intent) || data.stateDigest !== digestJson(state)
+      || !v.same(Object.keys(data).sort(), ['head', 'intent', 'intentDigest', 'migrationId', 'stateDigest']))) return v.unavailable('Pending intent and state lack matching immutable history');
     const source = operation === 'restore' ? state.restoreSourceHead : state.sourceHead;
     if (!source || !v.same(p.headAt(s), source)) return v.unavailable('Pending source head is unknown or changed');
     if (operation === 'restore' && !s.events.some(e => e.kind === 'storage.restore.intent' && e.taskId === p.options.taskId
@@ -301,13 +303,33 @@ export class Migrations {
     if (!v.integer(input.expectedRevision)) v.invalid('Invalid expected revision');
     if (input.expectedRevision !== s.revision) throw new v.Refusal({ code: 'revision_conflict', expected: input.expectedRevision, actual: s.revision });
     const previous = this.get(s, input.migrationId); this.noOtherPending(s, input.migrationId);
-    if (previous.phase === 'switch_pending') return this.finishSwitch(s, previous, input.authorisationRef);
+    if (previous.phase === 'switch_pending') return this.resumeSwitch(s, previous, input.authorisationRef);
     if (previous.phase !== 'checked') return v.unavailable('Shadow must be caught up and independently checked');
     await this.ready(s, previous); const policyRevision = await this.permit(s, 'switch', input.authorisationRef);
     const intent = p.identity.newId('execution');
     const state: State = { ...previous, phase: 'switch_pending', intent, migration: { ...previous.migration, pendingOperation: { executionId: intent, operation: 'switch', expectedRevision: input.expectedRevision } } };
     await p.commit(s, [p.replace(s, 'storage.migrations', input.migrationId, state), p.insert('storage.operations', `${intent}/intent`, this.intent(s, state, 'switch', intent, input.authorisationRef, policyRevision))], 'switch.intent', this.intentHistory(s, state, 'switch', input.authorisationRef, policyRevision));
     return this.finishSwitch(await p.snapshot(), state, input.authorisationRef);
+  }
+  async resumeSwitch(s: StoreSnapshot, previous: State, ref: string): Promise<Migration> {
+    const { p } = this;
+    const evidence = this.pendingEvidence(s, previous, 'switch');
+    const policyRevision = await this.permit(s, 'switch', ref);
+    await this.unchanged(s, previous);
+    if (ref === evidence.authorisationRef && policyRevision === evidence.policyRevision) return this.finishSwitch(s, previous, ref);
+    const inspectionDigest = this.legacyInspection(s, previous, 'switch', evidence);
+    if (evidence.inspectionDigest !== inspectionDigest) return v.unavailable('Pending projection inspection history is inconsistent');
+    await this.dataset(s);
+    const intent = p.identity.newId('execution');
+    const state: State = { ...previous, intent, migration: { ...previous.migration,
+      pendingOperation: { executionId: intent, operation: 'switch', expectedRevision: s.revision } } };
+    const mutations = [p.replace(s, 'storage.migrations', state.migration.migrationId, state),
+      p.insert('storage.operations', `${intent}/intent`, this.intent(s, state, 'switch', intent, ref, policyRevision, inspectionDigest)),
+      this.superseded(s, previous, intent, 'Verified pending switch replaced by explicitly authorised authority')];
+    if (await this.permit(s, 'switch', ref) !== policyRevision) return v.unavailable('New switch authority changed before replacement');
+    await this.unchanged(s, previous);
+    await p.commit(s, mutations, 'switch.intent', this.intentHistory(s, state, 'switch', ref, policyRevision, inspectionDigest));
+    return this.finishSwitch(await p.snapshot(), state, ref);
   }
   async finishSwitch(final: StoreSnapshot, state: State, ref: string): Promise<Migration> {
     const { p } = this; const id = state.migration.migrationId; const intent = state.intent;

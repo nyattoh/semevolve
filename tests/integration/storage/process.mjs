@@ -1,6 +1,8 @@
 import { openFileTaskStore, digestJson, inspectFileStoreOwner } from '@semevolve/core';
 import { migrationFixture, migrationRequest, checkedMigration, targetMapping } from '../../mechanism/storage/migration-fixtures.mjs';
-import { mapping, original, take } from '../../mechanism/storage/fixtures.mjs';
+import { mapping, original, take, rows } from '../../mechanism/storage/fixtures.mjs';
+import { createStoragePlanner } from '@semevolve/storage-planner';
+import { authorityOptions } from '../../mechanism/storage/supersession-fixtures.mjs';
 import { generations } from '../../mechanism/storage/generation-fixtures.mjs';
 import { legacyBatch } from '../../mechanism/storage/legacy-pending-fixtures.mjs';
 
@@ -22,6 +24,8 @@ const wrapped = { snapshot: () => store.snapshot(), close: () => store.close(), 
 const f = await migrationFixture({ store: wrapped, seed: options.seed !== false });
 process.on('message', async ({ id, action, input = {} }) => {
   try {
+    const config = rows(await f.snapshot(), 'host.authority-updates').at(-1);
+    if (config) f.runtime = createStoragePlanner(authorityOptions(f.options, rows(await f.snapshot(), 'host.grants'), config));
     let result;
     switch (action) {
       case 'snapshot': result = await f.snapshot(); break;
@@ -30,7 +34,8 @@ process.on('message', async ({ id, action, input = {} }) => {
       case 'prepare': result = await f.runtime.migration.prepare(await migrationRequest(f)); break;
       case 'checked': result = await checkedMigration(f); break;
       case 'catchUp': result = await f.runtime.migration.catchUp('migration-1', (await f.snapshot()).revision); break;
-      case 'switch': result = await f.runtime.migration.switch({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }); break;
+      case 'switch': result = await f.runtime.migration.switch({ migrationId: 'migration-1', expectedRevision: input.expectedRevision ?? (await f.snapshot()).revision, authorisationRef: input.authorisationRef ?? config?.ref ?? 'grant-switch' }); break;
+      case 'authority': await f.append('host.authority-updates', 'current', { ref: 'grant-switch-next', revision: 2, ...input }); result = true; break;
       case 'restore': result = await f.runtime.migration.restore({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-restore' }); break;
       case 'reconcile': result = await f.runtime.migration.reconcile('migration-1'); break;
       case 'retrieve': result = await f.runtime.retrieve({ all: true }, input.mappingId === 'M2' ? targetMapping : mapping()); break;
