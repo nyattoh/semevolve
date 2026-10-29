@@ -3,6 +3,7 @@ import { migrationFixture, migrationRequest, checkedMigration, targetMapping } f
 import { mapping, original, take, rows } from '../../mechanism/storage/fixtures.mjs';
 import { createStoragePlanner } from '@semevolve/storage-planner';
 import { authorityOptions } from '../../mechanism/storage/supersession-fixtures.mjs';
+import { projectionLegacyBatch } from '../../mechanism/storage/projection-pending-fixtures.mjs';
 import { generations } from '../../mechanism/storage/generation-fixtures.mjs';
 import { legacyBatch } from '../../mechanism/storage/legacy-pending-fixtures.mjs';
 
@@ -18,7 +19,10 @@ const store = await openFileTaskStore(directory, { mutableCollections: ['registr
   await new Promise(() => {});
 } });
 const wrapped = { snapshot: () => store.snapshot(), close: () => store.close(), transact: batch => {
-  if (legacyOperation && batch.events.some(e => e.kind === `storage.${legacyOperation}.intent`)) { legacyOperation = null; batch = legacyBatch(batch); }
+  if (legacyOperation && batch.events.some(e => e.kind === `storage.${legacyOperation}.intent`)) {
+    batch = ['copy', 'catch_up'].includes(legacyOperation) ? projectionLegacyBatch(batch, options.legacyFormat ?? 'legacy-inspection') : legacyBatch(batch);
+    legacyOperation = null;
+  }
   currentBatch = batch; return store.transact(batch);
 } };
 const f = await migrationFixture({ store: wrapped, seed: options.seed !== false });

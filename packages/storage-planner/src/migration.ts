@@ -162,7 +162,7 @@ export class Migrations {
     if (manifest.checkIds.some(id => { const c = v.find(s, 'storage.inspections', id); return !v.object(c) || c.querySetDigest !== digestJson(queries); })) return v.unavailable('Legacy query coverage is incomplete');
     return digestJson({ ...plan, queries });
   }
-  pendingEvidence(s: StoreSnapshot, state: State, operation: 'switch' | 'restore'): Record<string, unknown> {
+  pendingEvidence(s: StoreSnapshot, state: State, operation: Operation): Record<string, unknown> {
     const { p } = this;
     const pending = state.migration.pendingOperation;
     const intent = v.find(s, 'storage.operations', `${state.intent}/intent`);
@@ -176,6 +176,14 @@ export class Migrations {
       || v.find(s, 'storage.operations', `${state.intent}/receipt`) !== undefined
       || v.find(s, 'storage.operations', `${state.intent}/not-applied`) !== undefined
       || v.rows(s, 'storage.operations').some(r => v.object(r) && ['receipt', 'not_applied'].includes(String(r.kind)) && r.executionId === state.intent)) return v.unavailable('Pending intent cannot be proved unapplied');
+    const intentKeys = ['kind', 'operation', 'executionId', 'migrationId', 'taskId', 'scope', 'expectedRevision', 'snapshotDigest', 'sourceHeadDigest', 'datasetDigest', 'inputDigest', 'authorisationRef', 'policyRevision'];
+    if (Object.hasOwn(intent, 'inspectionDigest')) { if (!v.digest(intent.inspectionDigest)) return v.unavailable('Invalid pending inspection digest'); intentKeys.push('inspectionDigest'); }
+    if (!v.same(Object.keys(intent).sort(), intentKeys.sort())
+      || !v.same(v.find(s, 'storage.mappings', state.sourceMapping.mappingId), state.sourceMapping)
+      || !v.same(v.find(s, 'storage.mappings', state.targetMapping.mappingId), state.targetMapping)
+      || !v.same(state.migration.source, state.sourceMapping.versions) || !v.same(state.migration.target, state.targetMapping.versions)
+      || state.sourceHead.mappingId !== state.sourceMapping.mappingId || state.sourceHead.mappingDigest !== digestJson(state.sourceMapping)
+      || !v.integer(state.sourceHead.revision) || state.sourceHead.revision > intent.expectedRevision) return v.unavailable('Pending Mapping or input shape is inconsistent');
     const history = s.events.filter(e => e.kind === `storage.${operation}.intent` && e.taskId === p.options.taskId
       && v.object(e.data) && e.data.intent === state.intent && e.data.migrationId === state.migration.migrationId);
     if (history.length !== 1 || history[0]!.actor !== 'host' || !v.object(history[0]!.data)) return v.unavailable('Pending intent lacks matching immutable history');
@@ -185,9 +193,19 @@ export class Migrations {
       || !v.same(Object.keys(data).sort(), ['head', 'intent', 'intentDigest', 'migrationId', 'stateDigest']))) return v.unavailable('Pending intent and state lack matching immutable history');
     const source = operation === 'restore' ? state.restoreSourceHead : state.sourceHead;
     if (!source || !v.same(p.headAt(s), source)) return v.unavailable('Pending source head is unknown or changed');
+    if (modern && !v.same(data.head, source)) return v.unavailable('Pending history source head is inconsistent');
     if (operation === 'restore' && !s.events.some(e => e.kind === 'storage.restore.intent' && e.taskId === p.options.taskId
       && v.object(e.data) && e.data.intent === state.intent && e.data.migrationId === state.migration.migrationId
       && v.same(e.data.head, source))) return v.unavailable('Restoration source head is not supported by its intent history');
+    if (operation === 'copy' || operation === 'catch_up') {
+      if (!modern && !v.same(Object.keys(data).sort(), ['intent', 'migrationId'])) return v.unavailable('Unknown projection intent history');
+      if (state.generation === state.sourceHead.generation || (operation === 'copy' && state.migration.shadowRef !== state.generation)
+        || v.find(s, 'storage.manifests', state.generation) !== undefined
+        || v.rows(s, 'storage.manifests').some(r => v.object(r) && r.generation === state.generation)
+        || v.rows(s, 'storage.derived').some(r => v.object(r) && r.generation === state.generation)
+        || v.rows(s, 'storage.operations').some(r => v.object(r) && r.kind === 'receipt' && r.generation === state.generation)) return v.unavailable('Pending projection already has completion data or an ambiguous generation');
+      return intent;
+    }
     if (modern) return intent;
     const expectedKeys = operation === 'restore' ? ['intent', 'migrationId', 'head'] : ['intent', 'migrationId'];
     if (!v.same(Object.keys(data).sort(), expectedKeys.sort()) || Object.hasOwn(intent, 'inspectionDigest')) return v.unavailable('Incomplete new pending evidence cannot use legacy recovery');
@@ -218,7 +236,7 @@ export class Migrations {
     const migration: Migration = { ...request, shadowRef: generation, pendingOperation: { executionId: intent, operation: 'copy', expectedRevision: s.revision } };
     const state: State = { phase: 'copy_pending', intent, migration, scope: p.options.scope, requestDigest: digestJson(request), sourceMapping: source,
       targetMapping: target, sourceHead: head, dataset, datasetDigest: digestJson(dataset), generation };
-    await p.commit(s, [p.insert('storage.migrations', migration.migrationId, state), p.insert('storage.operations', `${intent}/intent`, this.intent(s, state, 'copy', intent, p.options.copyAuthorisationRef, policyRevision))], 'copy.intent', { intent, migrationId: migration.migrationId });
+    await p.commit(s, [p.insert('storage.migrations', migration.migrationId, state), p.insert('storage.operations', `${intent}/intent`, this.intent(s, state, 'copy', intent, p.options.copyAuthorisationRef, policyRevision))], 'copy.intent', this.intentHistory(s, state, 'copy', p.options.copyAuthorisationRef, policyRevision));
     return this.finishProjection(state, 'copy');
   }
   async finishProjection(state: State, operation: 'copy' | 'catch_up'): Promise<Migration> {
@@ -250,6 +268,8 @@ export class Migrations {
     const { p } = this; const s = await p.snapshot(); const previous = this.get(s, id);
     if (!v.integer(throughRevision) || throughRevision !== s.revision) v.invalid('Catch-up requires the current observed snapshot revision');
     if (['restore_pending', 'switched', 'restored'].includes(previous.phase)) return v.unavailable('Migration requires reconciliation, not catch-up');
+    const projectionPending = previous.phase === 'copy_pending' || previous.phase === 'catch_up_pending';
+    if (projectionPending) this.pendingEvidence(s, previous, previous.phase === 'copy_pending' ? 'copy' : 'catch_up');
     if (previous.phase === 'switch_pending') {
       const evidence = this.pendingEvidence(s, previous, 'switch');
       await this.permit(s, 'switch', String(evidence.authorisationRef));
@@ -266,8 +286,9 @@ export class Migrations {
       if (dataset && digestJson(dataset) === previous.datasetDigest && evidence.inspectionDigest === this.inspectionDigest()) return v.unavailable('Unchanged switch must explicitly resume its existing intent');
       mutations.push(this.superseded(s, previous, intent, 'Source head is unchanged; latest dataset or inspection requires catch-up'));
     }
+    if (projectionPending) mutations.push(this.superseded(s, previous, intent, 'Verified unapplied projection replaced by explicit catch-up'));
     await this.unchanged(s, previous);
-    await p.commit(s, mutations, 'catch_up.intent', { intent, migrationId: id });
+    await p.commit(s, mutations, 'catch_up.intent', this.intentHistory(s, state, 'catch_up', p.options.copyAuthorisationRef, policyRevision));
     return this.finishProjection(state, 'catch_up');
   }
   async ready(s: StoreSnapshot, state: State): Promise<void> {
