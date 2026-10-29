@@ -229,6 +229,7 @@ export class Migrations {
     const head = p.headAt(s); if (!head) return v.unavailable('No source head');
     const source = this.mapping(s, request.source), target = this.mapping(s, request.target);
     await p.registered(s, target);
+    if (p.options.inspectionEligibility) await p.verified(s, source);
     if (head.mappingDigest !== digestJson(source) || v.same(source.versions, target.versions)) v.invalid('Migration source head or target mismatch');
     const dataset = await this.dataset(s);
     const policyRevision = await this.permit(s, 'copy', p.options.copyAuthorisationRef);
@@ -242,9 +243,10 @@ export class Migrations {
   async finishProjection(state: State, operation: 'copy' | 'catch_up'): Promise<Migration> {
     const { p } = this; const s = await p.snapshot();
     this.fence(s, state, state.migration.pendingOperation!.expectedRevision);
+    const captured = p.options.inspectionEligibility ? await p.inspectionInput(s, [state.targetMapping], state.dataset.originals) : null;
     const units = await p.project(s, state.targetMapping, state.dataset.originals);
     const checks = await p.inspect(s, state.targetMapping, state.dataset.originals, units);
-    const final = await p.snapshot();
+    const final = captured ? await p.revalidateInspection(captured, checks) : await p.snapshot();
     this.fence(final, state, s.revision);
     if (!v.same(p.headAt(final), state.sourceHead) || digestJson(await this.dataset(final)) !== state.datasetDigest) return v.unavailable('Delta changed during shadow inspection; reconcile and catch up');
     await this.permit(final, 'copy', p.options.copyAuthorisationRef);
@@ -275,6 +277,7 @@ export class Migrations {
       await this.permit(s, 'switch', String(evidence.authorisationRef));
     }
     this.noOtherPending(s, id);
+    if (p.options.inspectionEligibility) await p.verified(s, previous.sourceMapping);
     if (!v.same(p.headAt(s), previous.sourceHead)) return v.unavailable('Source head changed');
     const dataset = await this.dataset(s); const policyRevision = await this.permit(s, 'copy', p.options.copyAuthorisationRef);
     const intent = p.identity.newId('execution'); const generation = p.identity.newId('storage-generation');
@@ -292,6 +295,7 @@ export class Migrations {
     return this.finishProjection(state, 'catch_up');
   }
   async ready(s: StoreSnapshot, state: State): Promise<void> {
+    if (this.p.options.inspectionEligibility) await this.p.verified(s, state.sourceMapping);
     if (!v.same(this.p.headAt(s), state.sourceHead) || digestJson(await this.dataset(s)) !== state.datasetDigest) return v.unavailable('Unreconciled source head or related delta');
     const manifest = v.find(s, 'storage.manifests', state.generation);
     if (!v.object(manifest) || manifest.generation !== state.generation || manifest.datasetDigest !== state.datasetDigest || manifest.mappingDigest !== digestJson(state.targetMapping)
@@ -315,6 +319,7 @@ export class Migrations {
         || !['literalRestoration', 'meaningPreservation', 'retrievalCorrectness'].every(k => v.object(check.result) && check.result[k] === 'pass')) return v.unavailable('Shadow has no current independent passing inspection');
       const valid = await v.boundary(async () => this.p.checkResult(check.result as unknown as StorageInspection['result'], check.request as unknown as StorageInspection['request']));
       if (!valid.ok) return v.unavailable('Shadow inspection result identity differs from its request');
+      if (!await this.p.inspectionCurrent(s, check as unknown as StorageInspection)) return v.unavailable('Shadow inspection requires canonical recheck');
       queries.push(check.request.retrieved.query);
     }
     if (!v.same(queries, this.p.options.comparison.queries)) return v.unavailable('Shadow query coverage differs from the current plan');
@@ -389,6 +394,7 @@ export class Migrations {
     if (!pending && (previous.migration.pendingOperation !== null || previous.migration.switchedAtRevision === null || !['switched', 'blocked'].includes(previous.phase))) return v.unavailable('Migration is not ready for restoration');
     const head = p.headAt(s);
     if (!head || head.mappingDigest !== digestJson(previous.targetMapping)) return v.unavailable('Restoration source head changed');
+    if (p.options.inspectionEligibility) await p.verified(s, previous.targetMapping);
     const dataset = await this.dataset(s); const policyRevision = await this.permit(s, 'restore', input.authorisationRef);
     if (pending && previous.datasetDigest === digestJson(dataset) && pending.authorisationRef === input.authorisationRef
       && pending.policyRevision === policyRevision && pending.inspectionDigest === this.inspectionDigest()) return this.finishRestore(previous, input.authorisationRef, s.revision);
@@ -410,12 +416,13 @@ export class Migrations {
     if (evidence.authorisationRef !== ref || evidence.inspectionDigest !== this.inspectionDigest()
       || digestJson(await this.dataset(inspectionSnapshot)) !== state.datasetDigest) return v.unavailable('Pending restoration inputs changed');
     if (await this.permit(inspectionSnapshot, 'restore', ref) !== evidence.policyRevision) return v.unavailable('Pending restoration policy revision changed');
+    const captured = p.options.inspectionEligibility ? await p.inspectionInput(inspectionSnapshot, [state.sourceMapping], dataset.originals, 'restore', ref) : null;
     const projection = await v.boundary(async () => {
       const units = await p.project(inspectionSnapshot, state.sourceMapping, dataset.originals);
       const checks = await p.inspect(inspectionSnapshot, state.sourceMapping, dataset.originals, units);
       return { units, checks };
     });
-    const final = await p.snapshot();
+    const final = captured ? await p.revalidateInspection(captured, projection.ok ? projection.value.checks : []) : await p.snapshot();
     this.fence(final, state, expectedRevision);
     this.pendingEvidence(final, state, 'restore');
     if (!v.same(p.headAt(final), head) || digestJson(await this.dataset(final)) !== state.datasetDigest) return v.unavailable('New delta invalidated restoration; pending verification is retained');

@@ -41,6 +41,7 @@ async function projectionEvidence(p: Planner, s: StoreSnapshot, candidate: Candi
         criteriaDigest: request.criteriaDigest, evaluatorVersion: request.evaluatorVersion, scope: request.scope })) return v.unavailable('Confirmed generation inspection input changed');
     p.checkResult(result as unknown as StorageInspection['result'], request as unknown as StorageInspection['request']);
     if (!p.passing(result as unknown as StorageInspection['result'])) return v.unavailable('Confirmed generation inspection did not pass');
+    if (!await p.inspectionCurrent(s, c as unknown as StorageInspection)) return v.unavailable('Confirmed generation inspection requires canonical recheck');
     const selected = v.value(await p.adapter(s, mapping).retrieve(v.json(request.retrieved.query), units, mapping));
     if (v.manifestUnitDigest(selected) !== v.manifestUnitDigest(request.retrieved.units as unknown as Parameters<typeof v.manifestUnitDigest>[0])) return v.unavailable('Confirmed generation retrieval differs from inspection');
     queries.push(request.retrieved.query);

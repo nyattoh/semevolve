@@ -10,6 +10,14 @@ import { confirmedGeneration } from './generation.js';
 
 export const storageMutableCollections = ['storage.migrations', 'storage.heads'] as const;
 
+interface InspectionInput {
+  readonly mappings: readonly Mapping[];
+  readonly originals: readonly OriginalInput[];
+  readonly operation: 'copy' | 'restore';
+  readonly ref: string;
+  readonly semantic: unknown;
+}
+
 export class Planner {
   readonly options: StoragePlannerOptions;
   readonly identity: HostIdentity;
@@ -102,6 +110,46 @@ export class Planner {
       || !['literalRestoration', 'meaningPreservation', 'retrievalCorrectness'].every(k => ['pass', 'fail', 'inconclusive'].includes(String(result[k as keyof StorageCheckResult])))
       || !v.unique(result.evidenceIds) || !(result.limitation === null || typeof result.limitation === 'string')) v.invalid('Storage evaluator result does not match its request');
   }
+  async inspectionCurrent(s: StoreSnapshot, check: StorageInspection, adoption = true): Promise<boolean> {
+    this.checkResult(check.result, check.request);
+    const read = this.options.inspectionEligibility;
+    if (!read) return true;
+    const current = v.value(await read(s, structuredClone(check.request), structuredClone(check.result)));
+    if (!v.object(current) || typeof current.eligible !== 'boolean' || typeof current.recheckRequired !== 'boolean'
+      || !(current.reason === null || typeof current.reason === 'string')) return v.unavailable('Canonical inspection eligibility is unavailable');
+    if (current.recheckRequired || !current.eligible) {
+      if (adoption) return false;
+      if (current.recheckRequired || this.passing(check.result)) return v.unavailable(current.reason ?? 'Canonical inspection cannot be adopted');
+    }
+    return true;
+  }
+  async inspectionInput(s: StoreSnapshot, mappings: readonly Mapping[], originals: readonly OriginalInput[], operation: 'copy' | 'restore' = 'copy', ref = this.options.copyAuthorisationRef): Promise<InspectionInput> {
+    for (const mapping of mappings) await this.registered(s, mapping);
+    const references = await Promise.all(originals.map(o => this.resolveRefs(s, o)));
+    const { measurement, ...plan } = this.options.comparison;
+    let authority: unknown = null;
+    if (this.options.inspectionEligibility) {
+      const task = v.value(await this.options.references.readTask(s, this.options.taskId));
+      const grant = v.value(await this.options.references.readGrant(s, ref));
+      if (!task || !isUtcTimestamp(task.startedAt) || !grant) return v.unavailable('Inspection task or grant is unavailable');
+      const policyRevision = await new Migrations(this).permit(s, operation, ref);
+      if (grant.policyRevision !== policyRevision) return v.unavailable('Inspection authority changed');
+      const { revision, ...control } = task;
+      authority = { task: control, grant, policyRevision };
+    }
+    const definitions = mappings.map(m => ({ mapping: m, rule: v.find(s, 'storage.rules', m.versions.ruleVersionId), structure: v.find(s, 'storage.structures', m.versions.storageVersionId) }));
+    return { mappings, originals, operation, ref, semantic: { originals, references, definitions, plan, measurementKind: measurement.kind, head: this.headAt(s), authority } };
+  }
+  async revalidateInspection(input: InspectionInput, checks: readonly StorageInspection[]): Promise<StoreSnapshot> {
+    const final = await this.snapshot();
+    const originals = await Promise.all(input.originals.map(o => this.original(final, o.message.envelope.message_id)));
+    const current = await this.inspectionInput(final, input.mappings, originals, input.operation, input.ref);
+    if (!v.same(current.semantic, input.semantic)) return v.unavailable('Inspection inputs, head or authority changed during evaluation');
+    for (const check of checks) await this.inspectionCurrent(final, check, false);
+    const observed = await this.snapshot();
+    if (observed.revision !== final.revision) throw new v.Refusal({ code: 'revision_conflict', expected: final.revision, actual: observed.revision });
+    return final;
+  }
   async inspect(s: StoreSnapshot, mapping: Mapping, originals: readonly OriginalInput[], units: readonly DerivedUnit[]): Promise<readonly StorageInspection[]> {
     const adapter = this.adapter(s, mapping);
     const plan = this.options.comparison;
@@ -130,9 +178,11 @@ export class Planner {
     const s = await this.snapshot();
     await this.registered(s, mapping);
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
+    const captured = await this.inspectionInput(s, [mapping], originals);
     const units = await this.project(s, mapping, originals);
     const checks = await this.inspect(s, mapping, originals, units);
-    await this.commit(s, checks.map(c => this.insert('storage.inspections', c.checkId, c)), 'inspected', { mappingId: mapping.mappingId, checkIds: checks.map(c => c.checkId) });
+    const final = await this.revalidateInspection(captured, checks);
+    await this.commit(final, checks.map(c => this.insert('storage.inspections', c.checkId, c)), 'inspected', { mappingId: mapping.mappingId, checkIds: checks.map(c => c.checkId) });
     return checks;
   }
   async recordConformance(input: Mapping, ids: readonly CheckId[]): Promise<void> {
@@ -141,6 +191,8 @@ export class Planner {
     await this.registered(s, mapping);
     if (!v.unique(ids) || ids.length !== this.options.comparison.queries.length || ids.length === 0) v.invalid('Missing real storage inspection checks');
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
+    const inputState = await this.inspectionInput(s, [mapping], originals);
+    const checks: StorageInspection[] = [];
     for (const id of ids) {
       const c = v.find(s, 'storage.inspections', id);
       if (!v.object(c) || !v.object(c.request) || !v.object(c.result) || c.checkId !== id || c.mappingDigest !== digestJson(mapping)
@@ -148,8 +200,10 @@ export class Planner {
         || c.request.criteriaDigest !== this.options.comparison.criteriaDigest || c.request.evaluatorVersion !== this.options.comparison.evaluatorVersion || c.request.scope !== this.options.scope) v.invalid('Mismatched conformance check');
       this.checkResult(c.result as unknown as StorageCheckResult, c.request as unknown as StorageInspection['request']);
       if (!this.passing(c.result as unknown as StorageCheckResult)) v.unavailable('Storage combination is not independently verified');
+      checks.push(c as unknown as StorageInspection);
     }
-    await this.immutable(s, 'storage.conformance', digestJson([mapping, ids]), { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion });
+    const final = await this.revalidateInspection(inputState, checks);
+    await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion });
   }
   passing(result: StorageCheckResult): boolean { return result.literalRestoration === 'pass' && result.meaningPreservation === 'pass' && result.retrievalCorrectness === 'pass'; }
   async verified(s: StoreSnapshot, mapping: Mapping): Promise<void> {
@@ -157,6 +211,39 @@ export class Planner {
     const found = v.rows(s, 'storage.conformance').some(c => v.object(c) && c.mappingDigest === digestJson(mapping)
       && c.criteriaDigest === this.options.comparison.criteriaDigest && c.evaluatorVersion === this.options.comparison.evaluatorVersion);
     if (!found) v.unavailable('Unverified language/rule/storage combination');
+    if (this.options.inspectionEligibility) {
+      const head = this.headAt(s);
+      if (head?.mappingDigest === digestJson(mapping)) {
+        const manifest = v.find(s, 'storage.manifests', head.generation);
+        const projected = v.rows(s, 'storage.operations').some(r => v.object(r) && r.kind === 'receipt' && r.generation === head.generation);
+        if (manifest !== undefined || projected) {
+          if (!v.object(manifest) || manifest.generation !== head.generation || manifest.mappingDigest !== digestJson(mapping)
+            || !v.unique(manifest.checkIds) || !manifest.checkIds.length) return v.unavailable('Live projection inspection manifest is unavailable');
+          for (const id of manifest.checkIds) {
+            const check = v.find(s, 'storage.inspections', id);
+            if (!v.object(check) || check.checkId !== id || !v.object(check.request) || !v.object(check.result)
+              || check.mappingDigest !== digestJson(mapping) || check.request.taskId !== this.options.taskId || check.request.scope !== this.options.scope
+              || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion
+              || !await this.inspectionCurrent(s, check as unknown as StorageInspection)) return v.unavailable('Live projection requires current canonical inspection');
+          }
+        }
+      }
+      for (const c of v.rows(s, 'storage.conformance')) {
+        if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest
+          || c.evaluatorVersion !== this.options.comparison.evaluatorVersion || !v.unique(c.ids) || !c.ids.length) continue;
+        let current = true;
+        for (const id of c.ids) {
+          const check = v.find(s, 'storage.inspections', id);
+          if (!v.object(check) || check.checkId !== id || !v.object(check.request) || !v.object(check.result) || check.mappingDigest !== digestJson(mapping)
+            || check.request.taskId !== this.options.taskId || check.request.scope !== this.options.scope
+            || check.querySetDigest !== digestJson(this.options.comparison.queries) || !v.same(check.request.expectedConditions, this.options.comparison.expectedConditions)
+            || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion) return v.unavailable('Conformance inspection identity is unavailable');
+          if (!await this.inspectionCurrent(s, check as unknown as StorageInspection) || !this.passing(check.result as unknown as StorageCheckResult)) current = false;
+        }
+        if (current) return;
+      }
+      return v.unavailable('Conformance requires current canonical inspection eligibility');
+    }
   }
   projection(s: StoreSnapshot, generation: string, mapping: Mapping): readonly DerivedUnit[] {
     const units: DerivedUnit[] = [];
@@ -182,20 +269,29 @@ export class Planner {
     const key = digestJson([generation, id, mapping]);
     const previous = v.find(s, 'storage.derived', key);
     const original = await this.original(s, id);
+    const captured = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], [original]) : null;
     if (previous !== undefined) {
       const saved = v.find(s, 'storage.originals', id);
       if (!v.same(saved, original)) v.collision(id);
+      if (captured) {
+        const final = await this.revalidateInspection(captured, []);
+        await this.verified(final, mapping);
+        const observed = await this.snapshot();
+        if (observed.revision !== final.revision) throw new v.Refusal({ code: 'revision_conflict', expected: final.revision, actual: observed.revision });
+      }
       return this.projection(s, generation, mapping).filter(u => u.source.messageId === id);
     }
     const units = await this.project(s, mapping, [original]);
     if (units.length === 0) v.unavailable('No derived units were produced');
     const saved = v.find(s, 'storage.originals', id);
     if (saved !== undefined && !v.same(saved, original)) v.collision(id);
+    const final = captured ? await this.revalidateInspection(captured, []) : s;
+    if (captured) await this.verified(final, mapping);
     const mutations = [this.insert('storage.derived', key, { generation, mappingDigest: digestJson(mapping), mappingId: mapping.mappingId, units })];
     if (saved === undefined) mutations.push(this.insert('storage.originals', id, original));
-    if (!head) mutations.push(this.insert('storage.heads', this.options.scope, { generation, mappingId: mapping.mappingId, mappingDigest: digestJson(mapping), revision: s.revision + 1 }));
-    mutations.push(this.insert('storage.changes', this.identity.newId('storage-change'), { messageId: id, originalDigest: digestJson(original), revision: s.revision + 1 }));
-    await this.commit(s, mutations, 'stored', { generation, messageId: id, mappingId: mapping.mappingId });
+    if (!head) mutations.push(this.insert('storage.heads', this.options.scope, { generation, mappingId: mapping.mappingId, mappingDigest: digestJson(mapping), revision: final.revision + 1 }));
+    mutations.push(this.insert('storage.changes', this.identity.newId('storage-change'), { messageId: id, originalDigest: digestJson(original), revision: final.revision + 1 }));
+    await this.commit(final, mutations, 'stored', { generation, messageId: id, mappingId: mapping.mappingId });
     return units;
   }
   async retrieve(query: JsonValue, input: Mapping): Promise<readonly DerivedUnit[]> {
@@ -205,8 +301,17 @@ export class Planner {
     const head = this.headAt(s);
     const chosen = head?.mappingDigest === digestJson(mapping) ? head.generation : await confirmedGeneration(this, s, mapping);
     const units = this.projection(s, chosen, mapping);
+    const originals = this.options.inspectionEligibility ? await Promise.all([...new Set(units.map(u => u.source.messageId))].map(id => this.original(s, id))) : [];
+    if (originals.some(o => !v.same(v.find(s, 'storage.originals', o.message.envelope.message_id), o))) return v.unavailable('Current original differs from the stored projection');
+    const captured = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const selected = structuredClone(v.value(await this.adapter(s, mapping).retrieve(structuredClone(query), units, mapping)));
     if (!Array.isArray(selected) || selected.some(u => !units.some(source => v.same(u, source)))) v.invalid('Retrieval changed provenance');
+    if (captured) {
+      const final = await this.revalidateInspection(captured, []);
+      await this.verified(final, mapping);
+      const observed = await this.snapshot();
+      if (observed.revision !== final.revision) throw new v.Refusal({ code: 'revision_conflict', expected: final.revision, actual: observed.revision });
+    }
     return selected;
   }
   async original(s: StoreSnapshot, id: MessageId): Promise<OriginalInput> {
@@ -216,9 +321,20 @@ export class Planner {
     await this.resolveRefs(s, o);
     return structuredClone(o);
   }
-  async resolveRefs(s: StoreSnapshot, o: OriginalInput): Promise<{ events: StoreSnapshot['events']; interpretations: Interpretation[]; checks: CheckExecution[] }> {
+  async resolveRefs(s: StoreSnapshot, o: OriginalInput, limitations?: string[]): Promise<{ events: StoreSnapshot['events']; interpretations: Interpretation[]; checks: CheckExecution[] }> {
     const e = o.message.envelope;
     const context = { taskId: this.options.taskId, messageId: e.message_id, languageVersionId: e.language_version_id, scope: this.options.scope };
+    const matches = (proofContext: unknown): boolean => {
+      if (!v.object(proofContext)) return false;
+      const { recheckRequired, reason, ...identity } = proofContext;
+      if (!v.same(identity, context) || !(recheckRequired === undefined || typeof recheckRequired === 'boolean')
+        || !(reason === undefined || reason === null || typeof reason === 'string')) return false;
+      if (recheckRequired) {
+        if (!limitations) return v.unavailable(typeof reason === 'string' ? reason : 'Referenced evidence requires recheck');
+        limitations.push(typeof reason === 'string' ? reason : 'Referenced evidence requires recheck');
+      }
+      return true;
+    };
     const events = o.eventRefs.map(id => {
       const event = s.events.find(event => event.eventId === id);
       if (!event || event.taskId !== context.taskId || !v.object(event.data) || event.data.messageId !== e.message_id
@@ -228,14 +344,14 @@ export class Planner {
     const interpretations: Interpretation[] = [];
     for (const id of o.interpretationRefs) {
       const proof = v.value(await this.options.references.readInterpretation(s, id));
-      if (!proof || !v.same(proof.context, context) || proof.interpretation.messageId !== e.message_id
+      if (!proof || !matches(proof.context) || proof.interpretation.messageId !== e.message_id
         || digestJson(proof.interpretation.inputSnapshot) !== proof.interpretation.inputDigest || !isUtcTimestamp(proof.interpretation.recordedAt)) v.invalid('Unresolved or mismatched interpretation');
       interpretations.push(proof.interpretation);
     }
     const checks: CheckExecution[] = [];
     for (const id of o.checkRefs) {
       const proof = v.value(await this.options.references.readCheck(s, id));
-      if (!proof || !v.same(proof.context, context) || proof.execution.taskId !== context.taskId || proof.execution.result.checkId !== id
+      if (!proof || !matches(proof.context) || proof.execution.taskId !== context.taskId || proof.execution.result.checkId !== id
         || proof.execution.result.targetMessageId !== e.message_id || proof.execution.result.languageVersionId !== e.language_version_id
         || proof.execution.result.scope !== context.scope || !v.digest(proof.execution.inputDigest) || !v.text(proof.execution.executionId)
         || !isUtcTimestamp(proof.execution.performedAt)) v.invalid('Unresolved or mismatched check execution');
@@ -264,9 +380,9 @@ export class Planner {
       .filter(o => o.message.envelope.message_id === reference || unitMessages.includes(o.message.envelope.message_id) || [...o.eventRefs, ...o.interpretationRefs, ...o.checkRefs].includes(reference));
     const messageIds = new Set(originals.map(o => o.message.envelope.message_id));
     const units = derived.filter(u => v.object(u) && v.object(u.source) && messageIds.has(u.source.messageId as MessageId)) as unknown as DerivedUnit[];
-    const events = [], interpretations = [], checks = [], unknowns = [];
+    const events = [], interpretations = [], checks = [], unknowns: string[] = [];
     for (const o of originals) {
-      const proof = await v.boundary(() => this.resolveRefs(s, o));
+      const proof = await v.boundary(() => this.resolveRefs(s, o, unknowns));
       if (!proof.ok) { unknowns.push(proof.error.code); continue; }
       events.push(...proof.value.events); interpretations.push(...proof.value.interpretations); checks.push(...proof.value.checks);
     }

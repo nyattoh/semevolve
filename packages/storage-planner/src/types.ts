@@ -29,6 +29,8 @@ export interface ReferenceContext {
   readonly messageId: MessageId;
   readonly languageVersionId: string;
   readonly scope: string;
+  readonly recheckRequired?: boolean;
+  readonly reason?: string | null;
 }
 export interface StorageGrant extends Operation {
   readonly ref: string;
@@ -89,6 +91,11 @@ export interface StoragePlannerOptions {
   readonly adapters: readonly StorageAdapter[];
   readonly comparison: ComparisonPlan;
   readonly copyAuthorisationRef: string;
+  readonly inspectionEligibility?: (snapshot: StoreSnapshot, request: StorageCheckRequest, result: StorageCheckResult) => Promise<Result<{
+    readonly eligible: boolean;
+    readonly recheckRequired: boolean;
+    readonly reason: string | null;
+  }>>;
 }
 export interface StorageTrace {
   readonly originals: readonly OriginalInput[];

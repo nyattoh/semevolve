@@ -3,8 +3,8 @@ import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { inspectFileStoreOwner, recoverFileStoreOwner } from '@semevolve/core';
 
-export async function start(t, directory, options = {}) {
-  const child = fork(new URL('./process.mjs', import.meta.url), [directory, JSON.stringify(options)], { execPath: process.execPath, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], timeout: 30000 });
+export async function start(t, directory, options = {}, entrypoint = new URL('./process.mjs', import.meta.url)) {
+  const child = fork(entrypoint, [directory, JSON.stringify(options)], { execPath: process.execPath, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], timeout: 30000 });
   const pending = new Map(); let next = 0; let ready; let reached; let stderr = '';
   child.stdout.on('data', () => {}); child.stderr.on('data', d => { stderr += d; });
   const prepared = new Promise(resolve => { ready = resolve; });
