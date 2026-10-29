@@ -6,6 +6,7 @@ import * as v from './validation.js';
 import { compare, conditions, retrieval, storageConditions } from './conditions.js';
 import { bodyDigest, checkSources } from './evidence.js';
 import { executionLog } from './executions.js';
+import { judgeProjection, storageInput } from './storage-projection.js';
 
 export interface EvaluatorRun {
   readonly runId: string;
@@ -48,6 +49,17 @@ export interface EvaluatorRuntime extends EvaluationPort {
   recordAnswer(input: { readonly messageId: MessageId; readonly receiverId: PeerId; readonly answer: JsonValue }): Promise<Result<Interpretation>>;
   recordDisclosure(input: { readonly messageId: MessageId; readonly receiverId: PeerId }): Promise<Result<Interpretation>>;
   readCheckEligibility(checkId: CheckId): Promise<Result<CheckEligibility>>;
+  readStorageCheckEligibility(executionId: ExecutionId): Promise<Result<StorageCheckEligibility>>;
+}
+export interface StorageCheckEligibility {
+  readonly eligible: boolean;
+  readonly recheckRequired: boolean;
+  readonly reason: string | null;
+  readonly runId: string;
+  readonly testSetDigest: string;
+  readonly request: StorageCheckRequest;
+  readonly result: StorageCheckResult;
+  readonly tomboInvalidationPending: boolean;
 }
 export interface CheckEligibility {
   readonly eligible: boolean;
@@ -149,16 +161,19 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const r = await ready(); if (!r.ok) return r;
     const version = await fixed(request); if (!version.ok) return version;
     const rules = expected.storage;
-    if (!storageConditions(rules) || request.scope !== run.scope || !v.same(request.expectedConditions, rules)
-      || request.inputDigest !== identity.digest({ taskId: request.taskId, original: request.original, retrieved: request.retrieved, expectedConditions: request.expectedConditions, scope: request.scope })) return reject('Storage conditions or input digest mismatch', v.serialise(request));
+    if (!storageConditions(rules)) return invalid('Invalid storage conditions');
+    if (request.scope !== run.scope || !v.same(request.expectedConditions, rules)
+      || request.inputDigest !== identity.digest(storageInput(request))) return reject('Storage conditions or input digest mismatch', v.serialise(request));
     const result = await executions.runCheck(request, 'storage', async () => {
       const started = performance.now();
-      const meaningPreservation = compare(request.retrieved, rules.meaning);
-      const retrievalCorrectness = retrieval(request.retrieved, rules.retrieval);
+      const judgement = rules.kind === 'storage-projection-v1' ? judgeProjection(request, rules) : {
+        literalRestoration: v.same(request.original, request.retrieved) ? 'pass' as const : 'fail' as const,
+        meaningPreservation: compare(request.retrieved, rules.meaning), retrievalCorrectness: retrieval(request.retrieved, rules.retrieval),
+      };
       const evidenceId = `observation-${request.executionId}` as import('@semevolve/core').EvidenceId;
       const result: StorageCheckResult = { executionId: request.executionId, inputDigest: request.inputDigest, evaluatorVersion: request.evaluatorVersion, criteriaDigest: request.criteriaDigest, scope: request.scope,
-        literalRestoration: v.same(request.original, request.retrieved) ? 'pass' : 'fail', meaningPreservation, retrievalCorrectness, evidenceIds: [evidenceId],
-        limitation: [meaningPreservation, retrievalCorrectness].includes('inconclusive') ? 'Required structured field unavailable' : null };
+        ...judgement, evidenceIds: [evidenceId],
+        limitation: 'limitation' in judgement ? judgement.limitation : [judgement.meaningPreservation, judgement.retrievalCorrectness].includes('inconclusive') ? 'Required structured field unavailable' : null };
       return { result, evidence: v.serialise({ evidenceId, kind: 'synthetic-storage-observation', original: request.original, retrieved: request.retrieved }), usage: usage(started) };
     });
     return result.ok && 'literalRestoration' in result.value ? ok(result.value) : result.ok ? unavailable('Unexpected storage product') : result;
@@ -257,6 +272,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     return unavailable('No progress committing disclosure');
   }
   return {
+    readStorageCheckEligibility: boundary(async (_executionId: ExecutionId) => unavailable<StorageCheckEligibility>('Storage eligibility is not connected')),
     captureInput: boundary(captureInput), recordAnswer: boundary(recordAnswer), recordDisclosure: boundary(recordDisclosure),
     evaluate: boundary(evaluate), evaluateStorage: boundary(evaluateStorage), withdraw: boundary(withdraw), readCheckEligibility: boundary(readCheckEligibility),
   };

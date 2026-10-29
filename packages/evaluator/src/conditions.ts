@@ -1,5 +1,7 @@
 import type { JsonValue, Verdict } from '@semevolve/core';
 import * as v from './validation.js';
+import { projectionConditions } from './storage-projection.js';
+import type { ProjectionConditions } from './storage-projection.js';
 
 export interface Condition { readonly path: readonly string[]; readonly equals: JsonValue }
 export interface Conditions { readonly kind: 'conditions-v1'; readonly checks: readonly Condition[] }
@@ -9,8 +11,8 @@ function checks(x: unknown): x is Condition[] {
   return Array.isArray(x) && x.length > 0 && x.every(c => v.object(c) && Object.keys(c).length === 2 && path(c.path) && Object.hasOwn(c, 'equals') && v.json(c.equals));
 }
 export function conditions(x: unknown): x is Conditions { return v.object(x) && Object.keys(x).length === 2 && x.kind === 'conditions-v1' && checks(x.checks); }
-export function storageConditions(x: unknown): x is StorageConditions {
-  return v.object(x) && Object.keys(x).length === 3 && x.kind === 'storage-v1' && checks(x.meaning)
+export function storageConditions(x: unknown): x is StorageConditions | ProjectionConditions {
+  return projectionConditions(x) || v.object(x) && Object.keys(x).length === 3 && x.kind === 'storage-v1' && checks(x.meaning)
     && v.object(x.retrieval) && Object.keys(x.retrieval).length === 2 && path(x.retrieval.path) && v.strings(x.retrieval.expected) && x.retrieval.expected.length > 0;
 }
 export function at(value: JsonValue, keys: readonly string[]): JsonValue | undefined {
