@@ -236,13 +236,13 @@ export function openStore(input: unknown): HubStore {
   demand(typeof options.authorityPath === 'string' && isAbsolute(options.authorityPath), 'invalid_path');
   demand(typeof options.contextPath === 'string' && isAbsolute(options.contextPath), 'invalid_path');
   const authorityPath = resolve(options.authorityPath);
-  demand(basename(authorityPath) === 'authority.json', 'invalid_path');
+  demand(samePath(basename(authorityPath), 'authority.json'), 'invalid_path');
   const directory = privateDirectory(dirname(authorityPath));
   const authority = readJson(authorityPath);
   keys(authority, ['schema', 'databaseId', 'databasePath']);
   demand(authority.schema === 'semevolve-m0-1', 'unknown_schema');
   const databasePath = join(directory, 'hub.sqlite');
-  demand(authority.databasePath === databasePath, 'invalid_path');
+  demand(typeof authority.databasePath === 'string' && samePath(authority.databasePath, databasePath), 'invalid_path');
   regularFile(databasePath);
   demand(samePath(dirname(resolve(options.contextPath)), directory), 'unauthorised');
   const context = readJson(options.contextPath);
