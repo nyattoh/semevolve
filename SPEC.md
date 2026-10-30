@@ -1,6 +1,6 @@
 # semevolve 仕様v2
 
-2026-10-29。Kotaのdecision29を基準にした実装前の仕様です。旧01・02・07の目的・通信・版管理・保存設計を、本書のM0〜M3へ整理し直しました。旧P0/J2/Iの計画は今後の実行指示にしません。
+2026-10-29のKotaのdecision29を基準にした仕様です。2026-10-30、decision30〜32の範囲でM0のローカルhub CLIを追加しました。旧01・02・07の目的・通信・版管理・保存設計を、本書のM0〜M3へ整理し直しました。旧P0/J2/Iの計画は今後の実行指示にしません。
 
 ## 1. 目的と境界
 
@@ -10,7 +10,7 @@ semevolveは、どのエージェントもadapter経由で参加できるhubで�
 
 hubはraytrek上で小さく動かし、永続保存はローカルSQLiteだけを使います。Neonの採用やDB製品比較は行いません。大きなUI、汎用オーケストレーター、全エージェントの自動起動、モデル再学習を初期の必須条件にしません。
 
-今回のdocs変更は仕様の置換です。接続、実験、移行の実行結果ではありません。
+M0のローカル機構と実エージェント接続の受入を分けます。現時点では実Grok Bot/Agyのhub到達性などにunknownが残り、M0は未完了です。M1以降の実験・移行は実行していません。
 
 ## 2. hubとadapter
 
@@ -62,6 +62,54 @@ worker↔workerでは別のworkerセッションを別IDで登録します。PM�
 - SQLite保存先と、実行ログ・資格情報・非公開の正解を公開リポへ入れないこと。
 
 6小タスクの候補は、制約付きの依頼、否定・例外、対象と版の識別、不確実性の保持、worker間の依存の受渡し、訂正を受けた作業の再計画です。M0で具体的な6入力と期待結果を確定し、試験開始後に有利な課題へ差し替えません。これは普遍的な能力試験ではなく、小さな協働の比較です。
+
+### 5.1 M0のCLIと入力形式
+
+Node 22.13.0以上とnpm 10.9.4を使います。22.13.0の公式binaryでフラグなしSQLite APIを確認しています。Node 22.0にはSQLiteがありません。CIの22 latestと24は実versionを出力し、latestの結果を最小版の結果と読み替えません。
+
+`npm run start:hub -- <command>`を使います。通常の操作には`--authority <絶対path>`と`--context <絶対path>`を渡します。JSON入力は`--input <絶対path>`で読み、本文をシェルとして実行しません。成功は`{ok:true,value:...}`とexit 0、失敗は`{ok:false,error:{code,message}}`とexit 2です。
+
+| command | 入力JSON |
+|---|---|
+| `prepare` | `{directory,participants}`。authority/contextの指定は不要。新directoryはrepo外、親は作成済みとする。 |
+| `join` | 任意の`{id,connectionRef,sessionRef}`。省略時はcontextの値。同じcontextと異なる値は拒否。 |
+| `leave` / `inbox` | 入力不要。inboxは任意の`{recipientId}`を受けるが自分以外は拒否。 |
+| `send` | `{id,runId,languageVersion,recipients,body,kind}`。senderはcontextから固定。 |
+| `ack` | `{messageId}`。当該recipientだけが受領を記録。 |
+| `translate` | 保存は`{id,sourceMessageId,runId,languageVersion,targetLanguage,text,sourceRef}`。取得は`{sourceMessageId}`。 |
+| `import` | PMのみ。`[{kind,value}]`。kindは`language`、`run`、`fixture`。batch全体をtransactionにする。 |
+| `inspect` | 入力不要。自分のidentity、関係するrunと原文、自分のdeliveryを返す。private fixtureはPMだけに返す。 |
+| `record` | 下記Measurementを一件保存。 |
+| `measurements` | `{runIds:[...]}`。同runと参照するformation runを重複なく集計。他actorの本文・出所は伏せる。 |
+| `record-readiness` | PMのみ。下記の証拠記録を保存。 |
+| `check-m0` | PMのみ、入力不要。六条件の証拠・unknownと`M0ready`を返す。取得成功とreadyを分ける。 |
+| `tokenise` | `{text}`。authority/context不要。固定tokenizerの配列と件数を返す。 |
+
+`Participant`は`{id,role,connectionRef,sessionRef,capabilities,languageVersions}`。roleは`pm`または`worker`、後二者は文字列配列です。初期の論理IDは`grok-bot@raytrek`と`agy@raytrek`です。別workerを加える場合はrootが別ID・connection・sessionを確認して新規準備します。`prepare`は既存directoryを変更せず、登録後のcontext追加・接続の乗換えは提供しません。
+
+`prepare`の成功値にはDB、authority、actor別contextのpathが入ります。authorityは同directoryの新規`hub.sqlite`へ固定し、contextはdatabase ID、actor、connection、session、OS bindingとランダムsecretを持ちます。DBにはsecretのhashを保存します。未知schema、別authorityのcontext、別actor/sessionは拒否します。ファイルのOS access controlを信頼するローカル境界であり、同一OSユーザーからの秘匿やremote authenticationは提供しません。
+
+`Language`は`{id,definition,sourceRef}`。`Run`は`{id,taskId,condition,languageVersion,actors,modelSettings,rerunOf,formationRunId}`です。conditionは`canary`、`japanese`、`internal`、`formation`。未知の設定・参照はnullable欄に`null`を使います。保存したrunは`status:'prepared'`となり、実行は開始しません。定義・run・原文は不変で、同じIDの異なる内容を拒否します。sendのkindは`canary`、`language_introduction`、`request`、`understanding`、`correction`、`result`です。
+
+`Fixture`は`{id,input,successCriteria,intentChecks,roles,modelSettings,limits}`。successCriteriaとintentChecksは文字列配列、rolesは`{sender,recipients}`、limitsは`{processingSeconds,correctionRounds}`です。inputHash、successCriteriaHash、fixtureHashをSHA256で計算して保存します。fixtureHashはhash欄を除く正規化JSONに対して計算します。任意の申告hashを渡した場合は一致を検査します。非公開の六課題・正解はrootが私的JSONで入力し、公開testは別の合成canaryを使います。
+
+### 5.2 M0の計測と証拠
+
+固定tokenizerはMITの`gpt-tokenizer@4.1.0`、`cl100k_base`です。Nodeの正式CommonJS exportを`createRequire`で読み、encodeの存在と整数配列の戻り値を実行時に検査します。依存型宣言のTextDecoder互換性のためにこの境界を設け、strict、`skipLibCheck:false`、既存tsconfigを維持します。DOM追加・global型上書き・依存コードのpatchは行いません。
+
+原文を正規化せず、特殊token表記も通常テキストとしてencodeします。chat overheadやprovider課金tokenを混ぜません。`Hello, world!`は`[9906,11,1917,0]`、`日本語`は`[9080,22656,45918,252]`です。言語導入・再導入、依頼、先行回答、訂正、結果の送信outputと各受信inputを別occurrenceで記録します。配送再試行だけでは加算せず、実際の再入力には新occurrenceを使います。
+
+Measurementの入力は`{runId,eventId,occurrenceId,messageId,recipientId,phase,direction,category,text,textRef,providerUsage,startedAt,endedAt,actualCost,sourceRef}`です。messageId、recipientId、text、textRef、providerUsage、両時刻、actualCostは欠測時に`null`。時刻はUTC ISO文字列、directionは`input/output/none`、phaseは`v0_formation/task/revision/human_translation/paste_waiting`です。categoryはsendのkindに加え`mismatch/translation/waiting`を使えます。再導入はtask phaseの`language_introduction`として数えます。
+
+providerUsageは`{inputTokens,outputTokens,totalTokens}`の各値を整数またはnullで保持します。actualCostは`{amount,currency}`またはnullです。固定token数、provider usage、費用は別項目です。inputのmessageIdを指定した記録では、recipientの適用記録と計測を同じtransactionで保存します。これは計測取込みの適用であり、外部副作用のexactly-once、理解、成功を意味しません。
+
+`measurements`はphaseごとの件数・token数・区間union・食い違い数を返します。欠測を含む合計はnullで、空phaseもtoken/時間をゼロに埋めません。経過時間は区間のunion、貼り付け待ちを除く処理時間はその区間差です。比較用のtaskとrevisionにformation runを一度だけ加算した値と、除外した値を返します。翻訳と貼り付け待ちは別phaseに残します。
+
+証拠記録は`{id,condition,facts,evidenceRefs,fixtureIds,sourceRef,observedAt}`です。conditionは`connection/sessions/tokenizer/fixtures/phases/storage`、factsは各確認項目の文字列またはnull、evidenceRefsは私的証拠の参照配列です。`check-m0`が返すfactsのnull欄を、実観測が得られた項目だけ埋めます。同IDは不変で、追加確認は新IDで保存します。各conditionの最後に追加された証拠を使い、過去の記録は保持します。
+
+fixtures条件のfixtureIdsは固定する六件です。各fixtureのmodelSettingsはactor IDごとに`{model,settings,permissions,quota,sourceRef}`を持たせます。設定・利用枠がunknownならnullを残し、readyにしません。tokenizer条件は名前・版・encoding・特殊token設定の固定値とも照合します。
+
+`check-m0`の`assessment:'operator_evidence_only'`は、rootの観測記録に基づく判定であることを示します。証拠が欠ければunknownを維持します。実接続やモデルをCLIの自己申告から推定せず、実Grok Bot/Agyの到達性、fresh session、権限・利用枠の確認はrootが担当します。合成testのready結果を本番のM0受入に転用しません。
 
 ## 6. M1 — 往復1回
 
