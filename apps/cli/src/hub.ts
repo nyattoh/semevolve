@@ -97,11 +97,16 @@ export class Hub {
       demand(Array.isArray(request.runIds) && request.runIds.length > 0);
       const runs = [...new Set(request.runIds.map(identifier))].map(id => this.accessibleRun(id));
       const formationRunIds = [...new Set(runs.flatMap(r => r.formationRunId === null ? [] : [r.formationRunId]))];
-      const formationRuns = formationRunIds.map(id => this.accessibleRun(id));
-      const ids = new Set([...runs.map(r => r.id), ...formationRunIds]);
+      const formationRuns = formationRunIds.flatMap(id => {
+        const formation = this.store.get<Run>('run', id);
+        demand(formation, 'unknown_run');
+        return formation.actors.includes(this.store.actor.id) ? [formation] : [];
+      });
+      const ids = new Set([...runs.map(r => r.id), ...formationRuns.map(r => r.id)]);
       const events = this.store.list<Measurement>('measurement').filter(e => ids.has(e.runId));
+      const requiredFormations = formationRunIds.map(id => ({ id, condition: 'formation' as const }));
       return {
-        tokenizer, ...summarise(events, formationRunIds, [...runs, ...formationRuns]),
+        tokenizer, ...summarise(events, formationRunIds, [...runs, ...requiredFormations]),
         events: events.map(e => e.actorId === this.store.actor.id ? e : { ...e, text: null, textRef: null, sourceRef: 'redacted' }),
       };
     }));
