@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { hostname, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -132,30 +133,65 @@ export function prepareStore(input: unknown): PreparedHub {
   const directory = resolve(request.directory);
   privateDirectory(dirname(directory));
   demand(!existsSync(directory), 'path_exists', 'Provisioning only creates a new private directory.');
-  mkdirSync(directory, { mode: 0o700 });
   const databasePath = join(directory, 'hub.sqlite');
-  closeSync(openSync(databasePath, 'wx', 0o600));
-  const db = new DatabaseSync(databasePath);
+  const authorityPath = join(directory, 'authority.json');
   const databaseId = randomUUID();
   const binding = osBinding();
   const contexts: PreparedHub['contexts'] = [];
+  const ownedFiles = new Map<string, Stats>();
+  let ownedDirectory: Stats | undefined;
+  let db: DatabaseSync | undefined;
+  let stage = 'database creation';
+  const writeOwned = (path: string, content: string): void => {
+    const fd = openSync(path, 'wx', 0o600);
+    try {
+      ownedFiles.set(path, fstatSync(fd));
+      writeFileSync(fd, content);
+    } finally { closeSync(fd); }
+  };
+  mkdirSync(directory, { mode: 0o700 });
   try {
+    ownedDirectory = lstatSync(directory);
+    writeOwned(databasePath, '');
+    db = new DatabaseSync(databasePath);
+    stage = 'schema creation';
     db.exec('BEGIN IMMEDIATE');
     for (const ddl of schema) db.exec(ddl);
     db.prepare('INSERT INTO metadata VALUES (?,?)').run('schema', 'semevolve-m0-1');
     db.prepare('INSERT INTO metadata VALUES (?,?)').run('database', databaseId);
+    stage = 'context creation';
     for (const p of people) {
       const secret = randomBytes(32).toString('hex');
       db.prepare('INSERT INTO principals VALUES (?,?,?,?,?)').run(p.id, canonical(p), digest(secret), binding, 'provisioned');
       const path = join(directory, `context-${contexts.length + 1}.json`);
-      writeFileSync(path, canonical({ databaseId, actorId: p.id, connectionRef: p.connectionRef, sessionRef: p.sessionRef, osBinding: binding, secret }), { flag: 'wx', mode: 0o600 });
+      writeOwned(path, canonical({ databaseId, actorId: p.id, connectionRef: p.connectionRef, sessionRef: p.sessionRef, osBinding: binding, secret }));
       contexts.push({ actorId: p.id, path });
     }
+    stage = 'database commit';
     db.exec('COMMIT');
-  } finally { db.close(); }
-  const authorityPath = join(directory, 'authority.json');
-  writeFileSync(authorityPath, canonical({ schema: 'semevolve-m0-1', databaseId, databasePath }), { flag: 'wx', mode: 0o600 });
-  return { authorityPath, databasePath, contexts };
+    db.close();
+    db = undefined;
+    stage = 'authority creation';
+    writeOwned(authorityPath, canonical({ schema: 'semevolve-m0-1', databaseId, databasePath }));
+    return { authorityPath, databasePath, contexts };
+  } catch {
+    let cleaned = false;
+    try {
+      db?.close();
+      const current = lstatSync(directory);
+      demand(ownedDirectory && current.isDirectory() && !current.isSymbolicLink() && current.dev === ownedDirectory.dev && current.ino === ownedDirectory.ino && samePath(realpathSync(directory), directory));
+      for (const [path, owned] of [...ownedFiles].reverse()) {
+        if (!existsSync(path)) continue;
+        const currentFile = lstatSync(path);
+        if (currentFile.isFile() && !currentFile.isSymbolicLink() && currentFile.dev === owned.dev && currentFile.ino === owned.ino) unlinkSync(path);
+      }
+      rmdirSync(directory);
+      cleaned = true;
+    } catch { cleaned = false; }
+    throw new HubError(cleaned ? 'prepare_failed' : 'prepare_cleanup_required', cleaned
+      ? `Preparation failed during ${stage}; this attempt was removed and can be retried.`
+      : `Preparation failed during ${stage}; cleanup is incomplete. Preserve the directory for private inspection; session material may remain.`);
+  }
 }
 
 export class HubStore {
