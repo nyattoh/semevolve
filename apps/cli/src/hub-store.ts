@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
-import type { Stats } from 'node:fs';
+import type { BigIntStats } from 'node:fs';
 import { hostname, userInfo } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -138,20 +138,20 @@ export function prepareStore(input: unknown): PreparedHub {
   const databaseId = randomUUID();
   const binding = osBinding();
   const contexts: PreparedHub['contexts'] = [];
-  const ownedFiles = new Map<string, Stats>();
-  let ownedDirectory: Stats | undefined;
+  const ownedFiles = new Map<string, BigIntStats>();
+  let ownedDirectory: BigIntStats | undefined;
   let db: DatabaseSync | undefined;
   let stage = 'database creation';
   const writeOwned = (path: string, content: string): void => {
     const fd = openSync(path, 'wx', 0o600);
     try {
-      ownedFiles.set(path, fstatSync(fd));
+      ownedFiles.set(path, fstatSync(fd, { bigint: true }));
       writeFileSync(fd, content);
     } finally { closeSync(fd); }
   };
   mkdirSync(directory, { mode: 0o700 });
   try {
-    ownedDirectory = lstatSync(directory);
+    ownedDirectory = lstatSync(directory, { bigint: true });
     writeOwned(databasePath, '');
     db = new DatabaseSync(databasePath);
     stage = 'schema creation';
@@ -178,12 +178,19 @@ export function prepareStore(input: unknown): PreparedHub {
     let cleaned = false;
     try {
       db?.close();
-      const current = lstatSync(directory);
+      const current = lstatSync(directory, { bigint: true });
       demand(ownedDirectory && current.isDirectory() && !current.isSymbolicLink() && current.dev === ownedDirectory.dev && current.ino === ownedDirectory.ino && samePath(realpathSync(directory), directory));
       for (const [path, owned] of [...ownedFiles].reverse()) {
         if (!existsSync(path)) continue;
-        const currentFile = lstatSync(path);
-        if (currentFile.isFile() && !currentFile.isSymbolicLink() && currentFile.dev === owned.dev && currentFile.ino === owned.ino) unlinkSync(path);
+        const entry = lstatSync(path);
+        if (!entry.isFile() || entry.isSymbolicLink()) continue;
+        const fd = openSync(path, 'r');
+        let matches: boolean;
+        try {
+          const currentFile = fstatSync(fd, { bigint: true });
+          matches = currentFile.dev === owned.dev && currentFile.ino === owned.ino;
+        } finally { closeSync(fd); }
+        if (matches) unlinkSync(path);
       }
       rmdirSync(directory);
       cleaned = true;
