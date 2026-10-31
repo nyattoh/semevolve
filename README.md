@@ -24,6 +24,12 @@
 
 ## 既存コードの扱い
 
+2026-10-31のdecision45／46では、M1Aとして既存Grokチャットと毎回fresh Agyを使う範囲を承認しました。形成用とpractice用のworkerを分け、実ペアがv0を決めます。M2の構成・12実行・効果比較はこの承認に含みません。上記のM0時点の開始保留に対する後続判断であり、M1実試行の完了を示すものではありません。
+
+M1の局所capture/reportは`Hub.captureM1`／`Hub.reportM1`と`node apps/cli/dist/hub-m1-cli.js capture|report`で扱います。引数・schemaは[SPECのM1記録](SPEC.md#61-m1の記録とcli)を参照してください。PMだけが不変manifest、先行理解回答、段階許可、operatorの結果判定、report snapshotを保存・取得します。既存hubの認証・SQLite schema・CLIは維持します。
+
+効率は観測済交換テキストの固定token数と実経過時間を別々に示し、v0形成込み／除外、人待ちunion、phase間の空白を保持します。必須観測の欠落は完全値をnullにします。電力・cloud RAM／GPU／KVは直接値がなければ「測定不能」です。M1 CLI自身のRSS・heapは境界sampleの観測最大であり、agentやcloudの真のpeakではありません。局所testの成功から実M1完了、token削減、時間短縮を主張しません。
+
 mainの`packages/core`、`packages/transport-adapters`、`packages/language-registry`を再利用候補として残します。既存transportは`createTransportEndpoint`と`createLocalTransportHub`、registryは`createLanguageRegistry`を提供します。これらは旧仕様のローカル機構で、v2の`join/leave/send/inbox/ack/translate`を実装済みとは扱いません。
 
 PR [#5](https://github.com/nyattoh/semevolve/pull/5) と [#6](https://github.com/nyattoh/semevolve/pull/6) はDraftの参照資料として凍結します。コードを取り込まず、コピー上の移行、受け手の先行回答、同じrunの二重計上防止という考え方だけをv2へ小さく書き直します。既存パッケージ・アプリの機構とテストのassertを維持し、削除文書を読むテストの入力参照だけを固定fixtureへ移します。
