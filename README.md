@@ -2,7 +2,7 @@
 
 エージェントが接続し、自分たちで育てる内部言語で協働する、小さなhubです。KVキャッシュの共有ではなく、各エージェントの公開された入出力を使います。人が読むときだけ、人間語へ翻訳します。
 
-**仕様v2・準備段階。** 現在のmainには旧仕様の基盤コードがあります。v2のhub、実エージェント間の往復、比較実験、SQLite移行が動いたという状態ではありません。
+**仕様v2・M0準備条件を承認例外付きで確認済み。** ローカルSQLiteのhubで実Grok Botと実Agyのcanary往復・受領ack、六課題の固定、保存後の再openを確認しました。2026-10-31のdecision40／42により、Grok Botのモデル非開示と既存チャット利用はM0限定の例外です。比較実験のセッション独立性は未達で、M1/M2の前に再判断します。`M0ready:true`はこの準備範囲のoperator判定であり、M1の開始・PRのmerge・内部言語の有効性を認めるものではありません。M1以降は開始していません。
 
 ## 最初に試すこと
 
@@ -32,7 +32,7 @@ PR [#5](https://github.com/nyattoh/semevolve/pull/5) と [#6](https://github.com
 
 ## 既存基盤の開発確認
 
-Node.js 22以上、npm 10.9.4を使います。以下は既存コードの検証であり、v2 hubを起動するコマンドではありません。
+Node.js 22.13.0以上、npm 10.9.4を使います。hubは組込み`node:sqlite`を使い、Node 22.0には対応しません。以下は既存コードの検証です。
 
 ```sh
 npm ci --ignore-scripts --no-audit --no-fund
@@ -46,6 +46,35 @@ npm run test --workspace=@semevolve/language-registry
 npm run test:persistence --workspace=@semevolve/language-registry
 npm run check:public-artifacts
 ```
+
+## M0のローカルhubを使う
+
+```sh
+npm run build
+npm run test:m0
+npm run start:hub -- --help
+```
+
+従来の`start:cli`とhelpは変更していません。hubはコマンドごとにSQLiteを開閉し、TCP serverやdaemonを起動しません。APIは`@semevolve/cli/hub`の`prepareHub`、`createHub`、`tokenise`です。
+
+rootがrepo外の私的JSONと、確認した接続・sessionに対応する参加者一覧を用意します。`prepare`は親directoryが存在する未使用の絶対directoryだけを作ります。既存hubやagmsg/TOMBOのDBを移行・修復しません。TEMPを使う場合、長期保存は保証されません。
+
+以下のPowerShell例では、環境変数にrootが用意した絶対pathを設定します。`SEMEVOLVE_PREPARE`は準備JSON、`SEMEVOLVE_AUTHORITY`は生成した`authority.json`、`SEMEVOLVE_CONTEXT`は自分のcontext、`SEMEVOLVE_INPUT`は操作の入力JSONです。入力形式は[SPEC §5.1](SPEC.md#51-m0のcliと入力形式)にあります。
+
+```powershell
+npm run --silent start:hub -- prepare --input "$env:SEMEVOLVE_PREPARE"
+npm run --silent start:hub -- join --authority "$env:SEMEVOLVE_AUTHORITY" --context "$env:SEMEVOLVE_CONTEXT"
+npm run --silent start:hub -- import --authority "$env:SEMEVOLVE_AUTHORITY" --context "$env:SEMEVOLVE_CONTEXT" --input "$env:SEMEVOLVE_INPUT"
+npm run --silent start:hub -- send --authority "$env:SEMEVOLVE_AUTHORITY" --context "$env:SEMEVOLVE_CONTEXT" --input "$env:SEMEVOLVE_INPUT"
+npm run --silent start:hub -- inbox --authority "$env:SEMEVOLVE_AUTHORITY" --context "$env:SEMEVOLVE_CONTEXT"
+npm run --silent start:hub -- check-m0 --authority "$env:SEMEVOLVE_AUTHORITY" --context "$env:SEMEVOLVE_CONTEXT"
+```
+
+`import`と`check-m0`はPM contextで実行します。各コマンドは一つのJSON Resultをstdoutへ返し、成功はexit 0、拒否・失敗はexit 2です。`check-m0`の取得成功もexit 0なので、準備可否には`value.M0ready`を使います。NodeのSQLite experimental warningはstderrに出ることがあります。
+
+actorは私的contextとOSユーザーへ固定されます。同一OSユーザーが他のcontextを読める限界があり、remote authenticationではありません。contextのsecretを表示・公開しないでください。IDの登録やCLI成功だけでは実Grok Bot/Agyの本人・モデル・接続を確認したことになりません。
+
+`ack`は受領だけです。`translate`は提供済みテキストを原文・run・版へ紐付けて保存し、意味の正しさは未検証です。モデルを呼ぶ機能はありません。`check-m0`はSPECの6条件についてrootが記録した証拠とunknownを返します。CLI自身が外部事実を検証したという意味ではありません。
 
 資格情報・DB・実行ログ・非公開の採点正解はコミットしません。既存agmsg DBやTOMBOを改変せず、有料APIへの自動切替もしません。
 
