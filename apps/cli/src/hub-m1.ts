@@ -294,10 +294,10 @@ export function captureM1(store: HubStore, input: unknown): unknown {
 export interface Missing extends Requirement { runId: string; reason: string }
 function coverage(manifest: Manifest, measurements: Measurement[], events: Observation[]): Missing[] {
   return manifest.requiredObservations.flatMap(r => {
-    const candidates = r.type === 'measurement'
-      ? measurements.filter(e => e.occurrenceId === r.id && e.actorId === r.actorId && e.direction === r.direction && e.category === r.category)
-      : events.filter(e => e.id === r.id && e.actorId === r.actorId && (e.kind === r.category || e.data.stage === r.category));
-    if (candidates.length > 0) return [];
+    const observed = r.type === 'measurement'
+      ? measurements.some(e => e.occurrenceId === r.id && e.actorId === r.actorId && e.direction === r.direction && e.category === r.category)
+      : events.some(e => e.id === r.id && e.actorId === r.actorId && (e.kind === r.category || e.data.stage === r.category));
+    if (observed) return [];
     if (r.conditional && events.some(e => e.kind === 'boundary' && e.data.stage === 'not_applicable' && e.data.requirementId === r.id)) return [];
     return [{ ...r, runId: manifest.runId, reason: 'required_observation_missing' }];
   });
@@ -405,15 +405,17 @@ function buildReport(store: HubStore, manifest: Manifest) {
   const events = store.list<Observation>('m1_event').filter(e => manifests.some(m => m.id === e.manifestId));
   const withoutFormation = scopeReport([manifest], measurements, events);
   const withFormation = scopeReport(manifests, measurements, events);
+  const formations = manifests.filter(m => m.scope === 'formation');
+  const formationOnly = formations.length ? scopeReport(formations, measurements, events) : null;
   const translations = measurements.filter(e => e.phase === 'human_translation' && e.direction !== 'none');
   const taskEvents = events.filter(e => e.manifestId === manifest.id);
   const protocolViolations = store.list<Message>('message').filter(m => m.runId === manifest.runId && ['correction', 'result'].includes(m.kind) && !taskEvents.some(e => e.messageId === m.id && e.kind === 'boundary')).map(m => 'untracked_' + m.kind + ':' + m.id);
   return {
-    schema: 'semevolve-m1-report-1', manifestId: manifest.id, manifests, tokenizer, withoutFormation, withFormation,
+    schema: 'semevolve-m1-report-1', manifestId: manifest.id, manifests, tokenizer, withoutFormation, withFormation, formationOnly,
     missingObservations: withFormation.missingObservations,
     observationIds: events.map(e => e.id), observations: events,
     measurements: measurements.map(e => ({ ...e, textHash: e.text === null ? null : digest(e.text) })),
-    translationTokens: { observedSubtotal: translations.reduce((n, e) => n + (e.tokens ?? 0), 0), completeTotal: translations.length === 0 || translations.some(e => e.tokens === null) ? null : translations.reduce((n, e) => n + (e.tokens ?? 0), 0) },
+    translationTokens: tokenTotals(translations, [], true),
     providerUsage: measurements.filter(e => e.providerUsage !== null).map(e => ({ runId: e.runId, eventId: e.eventId, sourceRef: e.sourceRef, usage: e.providerUsage })),
     providerInternalContext: null, actualCost: null,
     resources: { power: resourceReport(events, 'power'), cloudRAM: resourceReport(events, 'cloudRAM'), cloudGPU: resourceReport(events, 'cloudGPU'), cloudKV: resourceReport(events, 'cloudKV') },

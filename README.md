@@ -20,9 +20,9 @@
 | M2 比較と改訂 | 同じ6小タスクを日本語と内部言語で各1回比較し、タスク間で言語を改訂する。 |
 | M3 テーブル設計 | エージェント自身がSQLiteのコピーで設計・移行・検証し、維持・切替・復帰を記録する。 |
 
-トークン数・時間・意図の取り違えによる手戻りを別々に測ります。v0の取り決めコスト込み／抜きの両方を出し、Kotaの貼り付け待ち時間は分けます。TOMBOはM3で、手戻りが減らないときだけ試します。詳細と出典は **[SPEC.md](SPEC.md)** にまとめています。
+トークン数・時間・意図の取り違えによる手戻りを別々に測ります。v0の取り決めコスト込み／抜きの両方を出し、Kotaの貼り付け待ち時間は分けます。追加の点検機構はM3で、手戻りが減らないときだけ試します。詳細と出典は **[SPEC.md](SPEC.md)** にまとめています。
 
-2026-10-31のdecision47は、TOMBOをM3限定とした上記方針に対するM1の明示的な例外です。TOMBOはM1コードの依存にせず、Grok Bot側の固定版で目的乖離を点検します。v0合意後、依頼と先行回答後、最終報告前、およびそれらより先にDraft PRを開く場合はその直前に停止し、Grok Botの明示的な`proceed`を待ちます。TOMBOのtoken・時間はM1計測から分離します。このPRではSPECを変更しません。
+2026-10-31のdecision47／48は、点検機構をM3限定とした上記方針に対するM1の明示的な例外です。M1コードの依存を追加せず、Grok Bot側の目的乖離チェックを使います。v0合意後、依頼と先行回答後、最終報告前、および先行するDraft PR直前をcheckpointとし、明示的な`proceed`以外は停止します。今回のDraft PR直前に限り、decision48の3修正と局所検査成功が`proceed`の条件です。再度の事前質問は不要ですが、実v0形成はまだ未承認です。点検のtoken・時間はM1計測から分離し、取得不能ならunknownを保持します。将来の点検packetはSPEC抜粋とhash、状態、hub IDと抜粋、差分要約に限定し、ソースコードを含めません。このPRではSPECを変更しません。
 
 ## 既存コードの扱い
 
@@ -30,7 +30,9 @@
 
 M1の局所capture/reportは`Hub.captureM1`／`Hub.reportM1`と`node apps/cli/dist/hub-m1-cli.js capture|report`で扱います。引数は`node apps/cli/dist/hub-m1-cli.js --help`で確認できます。PMだけが不変manifest、先行理解回答、段階許可、operatorの結果判定、report snapshotを保存・取得します。既存hubの認証・SQLite schema・CLIは維持します。
 
-効率は観測済交換テキストの固定token数と実経過時間を別々に示し、v0形成込み／除外、人待ちunion、phase間の空白を保持します。必須観測の欠落は完全値をnullにします。電力・cloud RAM／GPU／KVは直接値がなければ「測定不能」です。M1 CLI自身のRSS・heapは境界sampleの観測最大であり、agentやcloudの真のpeakではありません。局所testの成功から実M1完了、token削減、時間短縮を主張しません。
+効率は観測済交換テキストの固定token数と実経過時間を別々に示し、v0形成込み／除外、人待ちunion、phase間の空白を保持します。reportの`formationOnly`は参照した形成manifestだけのtokens・tokensIncludingTranslation・time・missingObservationsを返し、形成自身のreportではその形成だけを返します。形成未参照はnullです。形成小計は実観測から直接集計し、込み／除外の差から推定しません。必須観測の欠落は完全値をnullにします。電力・cloud RAM／GPU／KVは直接値がなければ「測定不能」です。M1 CLI自身のRSS・heapは境界sampleの観測最大であり、agentやcloudの真のpeakではありません。局所testの成功から実M1完了、token削減、時間短縮を主張しません。
+
+M1 CIはWindows／UbuntuとNode 22.13.0／24.22.1の4交差でtypecheck後にM1を検査します。同PR headのM0 suiteとpublic scanは既存`m0.yml`のWindows／Ubuntu × Node 22／24 latestの4交差が担当します。M0の最小固定版検査は今回のローカルNode 22.13.0回帰で確認し、既存CIの22 latestと同一視しません。
 
 mainの`packages/core`、`packages/transport-adapters`、`packages/language-registry`を再利用候補として残します。既存transportは`createTransportEndpoint`と`createLocalTransportHub`、registryは`createLanguageRegistry`を提供します。これらは旧仕様のローカル機構で、v2の`join/leave/send/inbox/ack/translate`を実装済みとは扱いません。
 
@@ -65,7 +67,7 @@ npm run start:hub -- --help
 
 従来の`start:cli`とhelpは変更していません。hubはコマンドごとにSQLiteを開閉し、TCP serverやdaemonを起動しません。APIは`@semevolve/cli/hub`の`prepareHub`、`createHub`、`tokenise`です。
 
-rootがrepo外の私的JSONと、確認した接続・sessionに対応する参加者一覧を用意します。`prepare`は親directoryが存在する未使用の絶対directoryだけを作ります。既存hubやagmsg/TOMBOのDBを移行・修復しません。TEMPを使う場合、長期保存は保証されません。
+rootがrepo外の私的JSONと、確認した接続・sessionに対応する参加者一覧を用意します。`prepare`は親directoryが存在する未使用の絶対directoryだけを作ります。既存hubや他ツールのDBを移行・修復しません。TEMPを使う場合、長期保存は保証されません。
 
 以下のPowerShell例では、環境変数にrootが用意した絶対pathを設定します。`SEMEVOLVE_PREPARE`は準備JSON、`SEMEVOLVE_AUTHORITY`は生成した`authority.json`、`SEMEVOLVE_CONTEXT`は自分のcontext、`SEMEVOLVE_INPUT`は操作の入力JSONです。入力形式は[SPEC §5.1](SPEC.md#51-m0のcliと入力形式)にあります。
 
@@ -84,6 +86,6 @@ actorは私的contextとOSユーザーへ固定されます。同一OSユーザ�
 
 `ack`は受領だけです。`translate`は提供済みテキストを原文・run・版へ紐付けて保存し、意味の正しさは未検証です。モデルを呼ぶ機能はありません。`check-m0`はSPECの6条件についてrootが記録した証拠とunknownを返します。CLI自身が外部事実を検証したという意味ではありません。
 
-資格情報・DB・実行ログ・非公開の採点正解はコミットしません。既存agmsg DBやTOMBOを改変せず、有料APIへの自動切替もしません。
+資格情報・DB・実行ログ・非公開の採点正解はコミットしません。既存の外部ツールやDBを改変せず、有料APIへの自動切替もしません。
 
 ライセンス: [Apache-2.0](LICENSE)。

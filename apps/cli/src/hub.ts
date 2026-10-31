@@ -19,18 +19,13 @@ export function createHub(input: unknown): Result<Hub> {
 
 export class Hub {
   constructor(private readonly store: HubStore) {}
-  captureM1(input: unknown) {
+  captureM1(input: unknown) { return this.m1Operation(captureM1, input); }
+  reportM1(input: unknown) { return this.m1Operation(reportM1, input); }
+  private m1Operation(action: (store: HubStore, input: unknown) => unknown, input: unknown) {
     return result(() => this.store.transaction(() => {
       this.joined();
       demand(this.store.actor.role === 'pm', 'unauthorised');
-      return captureM1(this.store, input);
-    }));
-  }
-  reportM1(input: unknown) {
-    return result(() => this.store.transaction(() => {
-      this.joined();
-      demand(this.store.actor.role === 'pm', 'unauthorised');
-      return reportM1(this.store, input);
+      return action(this.store, input);
     }));
   }
   identity() {

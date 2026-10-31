@@ -178,3 +178,110 @@ test('C3 conditional absence needs an explicit reason; unknown text does not bec
   measure(f, 'unknown-extra', { input: true, text: null });
   assert.deepEqual(value(f.sender.reportM1({ manifestId: m.id })).withoutFormation.tokens, { observedSubtotal: 8, completeTotal: null });
 });
+
+const formationClock = { manifestId: 'formation-manifest', runId: 'formation-run', languageVersion: 'synthetic-bootstrap' };
+const formationMeasurement = { runId: 'formation-run', phase: 'v0_formation' };
+
+test('D48 formationOnly directly counts the referenced phase despite overlapping task time', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest({ formationManifestId: 'formation-manifest' })));
+  measure(f, 'request-output', formationMeasurement);
+  measure(f, 'request-input', { ...formationMeasurement, input: true });
+  measure(f, 'request-output'); measure(f, 'request-input', { input: true });
+  boundaries(f, { prefix: 'formation', start: 0, end: 10, overrides: formationClock });
+  boundaries(f, { start: 5, end: 15 });
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.deepEqual(r.formationOnly.runIds, ['formation-run']);
+  assert.deepEqual(r.formationOnly.tokens, { observedSubtotal: 8, completeTotal: 8 });
+  assert.equal(r.formationOnly.time.grossMs, 10000);
+  assert.equal(r.formationOnly.time.activeMs, 10000);
+  assert.equal(r.formationOnly.time.spanMs, 10000);
+  assert.equal(r.formationOnly.time.interphaseGapMs, 0);
+  assert.equal(r.withoutFormation.time.grossMs, 10000);
+  assert.equal(r.withFormation.time.grossMs, 15000);
+  assert.equal(r.withFormation.tokens.completeTotal, 16);
+});
+
+test('D48 formationOnly is null when no formation is referenced, even if another exists', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest()));
+  measure(f, 'request-output', formationMeasurement);
+  measure(f, 'request-input', { ...formationMeasurement, input: true });
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(r.formationOnly, null);
+  assert.deepEqual(r.withFormation.runIds, ['run-1']);
+});
+
+test('D48 formationOnly reports all missing observations without fabricated totals', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest({ formationManifestId: 'formation-manifest' })));
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.deepEqual(r.formationOnly.tokens, { observedSubtotal: 0, completeTotal: null });
+  assert.equal(r.formationOnly.time.grossMs, null);
+  assert.equal(r.formationOnly.time.activeMs, null);
+  assert.deepEqual(r.formationOnly.missingObservations.map(m => m.id), ['request-output', 'request-input']);
+  assert.deepEqual(r.formationOnly.time.missing, ['formation-run:boundary_or_clock', 'formation-run:wait_inventory']);
+});
+
+test('D48 formationOnly preserves partial tokens independently of complete time', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest({ formationManifestId: 'formation-manifest' })));
+  measure(f, 'request-output', formationMeasurement);
+  measure(f, 'request-output'); measure(f, 'request-input', { input: true });
+  boundaries(f, { prefix: 'formation', start: 0, end: 10, overrides: formationClock });
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.deepEqual(r.formationOnly.tokens, { observedSubtotal: 4, completeTotal: null });
+  assert.equal(r.formationOnly.time.grossMs, 10000);
+  assert.equal(r.withoutFormation.tokens.completeTotal, 8);
+  assert.equal(r.withFormation.tokens.completeTotal, null);
+});
+
+test('D48 formationOnly retains complete tokens when an end clock is missing', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest({ formationManifestId: 'formation-manifest' })));
+  measure(f, 'request-output', formationMeasurement);
+  measure(f, 'request-input', { ...formationMeasurement, input: true });
+  boundaries(f, { prefix: 'formation', start: 0, end: null, overrides: formationClock });
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.deepEqual(r.formationOnly.tokens, { observedSubtotal: 8, completeTotal: 8 });
+  assert.equal(r.formationOnly.time.grossMs, null);
+  assert.deepEqual(r.formationOnly.time.missing, ['formation-run:boundary_or_clock']);
+});
+
+test('D48 a formation report reports itself and preserves observed zero', t => {
+  const f = setup(t); formation(f);
+  measure(f, 'request-output', { ...formationMeasurement, text: '' });
+  measure(f, 'request-input', { ...formationMeasurement, input: true, text: '' });
+  boundaries(f, { prefix: 'formation', start: 0, end: 0, overrides: formationClock });
+  const r = value(f.sender.reportM1({ manifestId: 'formation-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.deepEqual(r.formationOnly.tokens, { observedSubtotal: 0, completeTotal: 0 });
+  assert.equal(r.formationOnly.time.grossMs, 0);
+  assert.equal(r.formationOnly.time.waitUnionMs, 0);
+  assert.equal(r.formationOnly.time.activeMs, 0);
+  assert.deepEqual(r.formationOnly.runIds, ['formation-run']);
+});
+
+test('D48 formationOnly keeps translations separate and preserves other phase totals', t => {
+  const f = setup(t); formation(f);
+  value(f.sender.captureM1(manifest({ formationManifestId: 'formation-manifest' })));
+  measure(f, 'request-output', formationMeasurement);
+  measure(f, 'request-input', { ...formationMeasurement, input: true });
+  measure(f, 'formation-translation', { runId: 'formation-run', phase: 'human_translation', category: 'translation' });
+  measure(f, 'request-output'); measure(f, 'request-input', { input: true });
+  measure(f, 'revision', { phase: 'revision', category: 'correction' });
+  measure(f, 'task-translation', { phase: 'human_translation', category: 'translation' });
+  const r = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+  assert.equal(Object.hasOwn(r, 'formationOnly'), true);
+  assert.equal(r.formationOnly.tokens.completeTotal, 8);
+  assert.equal(r.formationOnly.tokensIncludingTranslation.completeTotal, 12);
+  assert.equal(r.withoutFormation.tokens.completeTotal, 12);
+  assert.equal(r.withoutFormation.tokensIncludingTranslation.completeTotal, 16);
+  assert.equal(r.withFormation.tokens.completeTotal, 20);
+  assert.equal(r.withFormation.tokensIncludingTranslation.completeTotal, 28);
+  assert.deepEqual(r.translationTokens, { observedSubtotal: 8, completeTotal: 8 });
+});

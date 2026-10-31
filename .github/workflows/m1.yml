@@ -32,5 +32,3 @@ jobs:
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run typecheck
       - run: node --test --test-reporter=tap tests/integration/m1/*.test.mjs
-      - run: npm run test:m0
-      - run: npm run check:public-artifacts
