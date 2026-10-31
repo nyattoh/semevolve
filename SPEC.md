@@ -109,6 +109,8 @@ providerUsageは`{inputTokens,outputTokens,totalTokens}`の各値を整数また
 
 fixtures条件のfixtureIdsは固定する六件です。各fixtureのmodelSettingsはactor IDごとに`{model,settings,permissions,quota,sourceRef}`を持たせます。設定・利用枠がunknownならnullを残し、readyにしません。tokenizer条件は名前・版・encoding・特殊token設定の固定値とも照合します。
 
+2026-10-31のdecision40により、Grok Botのモデル非開示をM0の明示的な例外とします。実モデル名を推定せず、model欄には「非開示・decision40承認例外」と記録し、アプリ名、確認済みのエージェントID、取得できる設定を私的な証拠と課題設定へ固定します。モデル間の同等性や基盤モデルの固定を確認したとは扱いません。Grok Botの新規セッションはKotaが手動で開く新規チャットを使い、自動作成を必須にしません。前条件の会話・結果を入力しない手順と、実際に確認できた独立性・隔離の限界は引き続き記録します。利用枠は確認できたプラン・時点・使用状況と数値不明を分け、プラン変更後は実験前に再確認します。
+
 `check-m0`の`assessment:'operator_evidence_only'`は、rootの観測記録に基づく判定であることを示します。証拠が欠ければunknownを維持します。実接続やモデルをCLIの自己申告から推定せず、実Grok Bot/Agyの到達性、fresh session、権限・利用枠の確認はrootが担当します。合成testのready結果を本番のM0受入に転用しません。
 
 ## 6. M1 — 往復1回
