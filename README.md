@@ -32,7 +32,7 @@ M1の局所capture/reportは`Hub.captureM1`／`Hub.reportM1`と`node apps/cli/di
 
 効率は観測済交換テキストの固定token数と実経過時間を別々に示し、v0形成込み／除外、人待ちunion、phase間の空白を保持します。reportの`formationOnly`は参照した形成manifestだけのtokens・tokensIncludingTranslation・time・missingObservationsを返し、形成自身のreportではその形成だけを返します。形成未参照はnullです。形成小計は実観測から直接集計し、込み／除外の差から推定しません。必須観測の欠落は完全値をnullにします。電力・cloud RAM／GPU／KVは直接値がなければ「測定不能」です。M1 CLI自身のRSS・heapは境界sampleの観測最大であり、agentやcloudの真のpeakではありません。局所testの成功から実M1完了、token削減、時間短縮を主張しません。
 
-M1 CIはWindows／UbuntuとNode 22.13.0／24.22.1の4交差でtypecheck後にM1を検査します。同PR headのM0 suiteとpublic scanは既存`m0.yml`のWindows／Ubuntu × Node 22／24 latestの4交差が担当します。M0の最小固定版検査は今回のローカルNode 22.13.0回帰で確認し、既存CIの22 latestと同一視しません。
+decision49により、M1 CIはUbuntu／Node 24.22.1の1ジョブでbuild後にM1テスト全件を検査します。M1固有のWindows分岐やファイルロック処理はなく、既存hubのOS依存部分は変更しない`m0.yml`のWindows／Ubuntu × Node 22／24 latestの4交差が担当します。M0 suite・typecheck・public scanも既存workflowに残します。M1のPR実行は関連するアプリ・パッケージ・入力テスト・依存設定・workflowの変更に絞り、同じPRの古いM1実行だけを自動キャンセルします。main向け実行は自動キャンセルしません。過去のローカルNode 22.13.0検査と、CIの22 latestは区別します。
 
 mainの`packages/core`、`packages/transport-adapters`、`packages/language-registry`を再利用候補として残します。既存transportは`createTransportEndpoint`と`createLocalTransportHub`、registryは`createLanguageRegistry`を提供します。これらは旧仕様のローカル機構で、v2の`join/leave/send/inbox/ack/translate`を実装済みとは扱いません。
 
