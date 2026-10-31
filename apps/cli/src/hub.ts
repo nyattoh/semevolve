@@ -4,6 +4,7 @@ import { completeFixtureSettings, fixtureDefinition, language, m0Conditions, mes
 import type { Delivery, Fixture, Language, Message, ReadinessEvidence, Run, Translation } from './hub-data.js';
 import { encodeText, measurement, summarise, tokenizer } from './hub-measurement.js';
 import type { Measurement } from './hub-measurement.js';
+import { captureM1, reportM1 } from './hub-m1.js';
 export type { Result, PreparedHub } from './hub-store.js';
 
 export function tokenise(input: unknown) { return result(() => encodeText(input)); }
@@ -18,6 +19,15 @@ export function createHub(input: unknown): Result<Hub> {
 
 export class Hub {
   constructor(private readonly store: HubStore) {}
+  captureM1(input: unknown) { return this.m1Operation(captureM1, input); }
+  reportM1(input: unknown) { return this.m1Operation(reportM1, input); }
+  private m1Operation(action: (store: HubStore, input: unknown) => unknown, input: unknown) {
+    return result(() => this.store.transaction(() => {
+      this.joined();
+      demand(this.store.actor.role === 'pm', 'unauthorised');
+      return action(this.store, input);
+    }));
+  }
   identity() {
     const { id, role, connectionRef, sessionRef } = this.store.actor;
     return { actorId: id, role, connectionRef, sessionRef };
