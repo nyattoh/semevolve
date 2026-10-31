@@ -22,11 +22,13 @@
 
 トークン数・時間・意図の取り違えによる手戻りを別々に測ります。v0の取り決めコスト込み／抜きの両方を出し、Kotaの貼り付け待ち時間は分けます。TOMBOはM3で、手戻りが減らないときだけ試します。詳細と出典は **[SPEC.md](SPEC.md)** にまとめています。
 
+2026-10-31のdecision47は、TOMBOをM3限定とした上記方針に対するM1の明示的な例外です。TOMBOはM1コードの依存にせず、Grok Bot側の固定版で目的乖離を点検します。v0合意後、依頼と先行回答後、最終報告前、およびそれらより先にDraft PRを開く場合はその直前に停止し、Grok Botの明示的な`proceed`を待ちます。TOMBOのtoken・時間はM1計測から分離します。このPRではSPECを変更しません。
+
 ## 既存コードの扱い
 
 2026-10-31のdecision45／46では、M1Aとして既存Grokチャットと毎回fresh Agyを使う範囲を承認しました。形成用とpractice用のworkerを分け、実ペアがv0を決めます。M2の構成・12実行・効果比較はこの承認に含みません。上記のM0時点の開始保留に対する後続判断であり、M1実試行の完了を示すものではありません。
 
-M1の局所capture/reportは`Hub.captureM1`／`Hub.reportM1`と`node apps/cli/dist/hub-m1-cli.js capture|report`で扱います。引数・schemaは[SPECのM1記録](SPEC.md#61-m1の記録とcli)を参照してください。PMだけが不変manifest、先行理解回答、段階許可、operatorの結果判定、report snapshotを保存・取得します。既存hubの認証・SQLite schema・CLIは維持します。
+M1の局所capture/reportは`Hub.captureM1`／`Hub.reportM1`と`node apps/cli/dist/hub-m1-cli.js capture|report`で扱います。引数は`node apps/cli/dist/hub-m1-cli.js --help`で確認できます。PMだけが不変manifest、先行理解回答、段階許可、operatorの結果判定、report snapshotを保存・取得します。既存hubの認証・SQLite schema・CLIは維持します。
 
 効率は観測済交換テキストの固定token数と実経過時間を別々に示し、v0形成込み／除外、人待ちunion、phase間の空白を保持します。必須観測の欠落は完全値をnullにします。電力・cloud RAM／GPU／KVは直接値がなければ「測定不能」です。M1 CLI自身のRSS・heapは境界sampleの観測最大であり、agentやcloudの真のpeakではありません。局所testの成功から実M1完了、token削減、時間短縮を主張しません。
 
