@@ -6,7 +6,7 @@
 - **文書配置先**: `%TEMP%\semevolve-decision62-20261101\adapter-survey.md`
 - **調査担当**: Agy / `gemini-3.8-flash-medium`（調査サブエージェント、非M2実験エージェント、子孫エージェント生成なし）
 - **タスク識別子**: decision62 / P4r2（Kota明示承認、排他2タスク構成、P5文書修正と並列）
-- **対象リポジトリ**: `D:\develop\works\t3code-cutover-prep-20261005\nightly-history-test-home\worktrees\semevolve\pm-p0-plan`（読取専用）
+- **対象リポジトリ**: `<pm-p0-plan worktree>`（読取専用）
 - **リポジトリ状態（事前/事後確認）**:
   - 対象HEAD: `39412a1e5cee42fb5dc6d2deab792a86fd3f32fd`（事前・事後ともに完全一致）
   - ブランチ: `devin/20261031-1235-m1-roundtrip`（clean、未コミット変更なし）

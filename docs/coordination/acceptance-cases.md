@@ -8,7 +8,7 @@
 - **観測開始時刻 (JST)**: 2026-11-01T07:50:36.8315318+09:00
 - **完了記録時刻 (JST)**: 2026-11-01T07:56:04.1227619+09:00
 - **リポジトリ状態検証**:
-  - 作業ディレクトリ: `D:\develop\works\t3code-cutover-prep-20261005\nightly-history-test-home\worktrees\semevolve\pm-p0-plan`
+  - 作業ディレクトリ: `<pm-p0-plan worktree>`
   - ブランチ: `devin/20261031-1235-m1-roundtrip`（clean, commit/push/PR一切なし）
   - HEAD: `39412a1e5cee42fb5dc6d2deab792a86fd3f32fd`
 - **調査性質**: 読取専用の静的コード調査および仕様整合（実際のテスト実行・RED証拠の主張なし、実際のhub/DB操作なし、provider CLI呼び出しなし、プロセスkillなし、ルーター変更なし）
@@ -301,7 +301,7 @@ decision61草案に存在していた実装乖離・スキーマ不整合（D61-
 - **出典・根拠**: 現行実装 `apps/cli/src/hub-data.ts:23`, `apps/cli/src/hub-store.ts:227-234`, `apps/cli/src/hub-cli.ts:10-14,49,57`, `SPEC.proposed.md:36`
 - **前提条件**: hub CLI が JSON 入力ファイルを受け付ける。
 - **入力 (Explicit Inputs)**:
-  - `send` の `body` にシェルコマンド文字列（例: `; rm -rf / ;`, `powershell Stop-Process`, `& del /f /q C:\\* `）を含む JSON を指定して実行。
+  - `send` の `body` にシェルコマンド文字列（例: `; rm -rf / ;`, `powershell Stop-Process`, `& del /f /q ./synthetic-target/* `）を含む JSON を指定して実行。
 - **観測可能な期待結果**:
   - 終了コード `0`。
   - 本文は純粋なリテラル文字列データとしてのみ SQLite `records` テーブルに保存され、OSシェルでの実行やプロセス起動は一切発生しない。
