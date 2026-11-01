@@ -3,7 +3,7 @@
 ## 1. 文書メタデータおよびガバナンス前提
 
 - **文書名**: `adapter-survey.md`
-- **文書配置先**: `%TEMP%\semevolve-decision62-20261101\adapter-survey.md`
+- **文書配置先**: `docs/coordination/adapter-survey.md`
 - **調査担当**: Agy / `gemini-3.8-flash-medium`（調査サブエージェント、非M2実験エージェント、子孫エージェント生成なし）
 - **タスク識別子**: decision62 / P4r2（Kota明示承認、排他2タスク構成、P5文書修正と並列）
 - **対象リポジトリ**: `<pm-p0-plan worktree>`（読取専用）
@@ -14,16 +14,12 @@
 - **記録タイムスタンプ（JST）**:
   - 観測開始（First-observed）: `2026-11-01T07:50:17.9012397+09:00`
   - 調査完了（Finishing）: `2026-11-01T07:53:54.1033214+09:00`
-- **参照許可入力（Private Inputs）**:
-  - `%TEMP%\semevolve-decision60-20261101\TASKS.md`
-  - `%TEMP%\semevolve-decision60-20261101\SPEC.proposed.md`
-  - `%TEMP%\semevolve-decision60-20261101\SPEC.patch`
-  - `%TEMP%\semevolve-decision61-20261101\acceptance-cases.md`
-  - `%TEMP%\semevolve-decision61-20261101\parallel-evidence.json`
-  - `%TEMP%\semevolve-decision61-20261101\adapter-survey.md`
+- **参照資料（repo内）**:
+  - [SPEC.md](../../SPEC.md)
+  - [Kota承認済みの運用ルール（受入ケース§3.1）](acceptance-cases.md#operating-rules)
 - **所有権境界**:
-  - P4r2は `%TEMP%\semevolve-decision62-20261101\adapter-survey.md` のみを排他所有し作成・更新する。
-  - 同一ディレクトリの `parallel-evidence.json` は親エージェントが専有し、P4r2は一切編集・接触しない。
+  - 本書の更新は単一writerが担当し、並列作業では他担当の文書を変更しない。
+  - 実行証拠の記録は主担当が管理する。担当と記録の要件は上記の運用ルールを参照する。
 - **作業制約**:
   - リポジトリコードの編集、ブランチ作成、コミット、push、PR操作、CI/Bugbot実行、実ハブ/DB操作、プロセス停止、ルーター/既定変更は一切行わない。
   - M2非公開データへのアクセスは行わない。
@@ -253,10 +249,10 @@
    - `SPEC.md:88` に明記: `「prepareは既存directoryを変更せず、登録後のcontext追加・接続の乗り換えは提供しません。」`
 
 ### 5.2 decision60 提案仕様（Proposed Convention / Host API）との差異
-- `decision60 SPEC.patch` および `SPEC.proposed.md:34,36` で提案された仕様:
+- decision60に基づく[Kota承認済みの運用ルール（受入ケース§3.1）](acceptance-cases.md#operating-rules)に記載した提案:
   - 承認済みタスクの範囲内において、エージェント同士が直接 `inbox` / `send` を用いて通信すること。
   - 新規ワーカーが必要な場合、目的・作業範囲・依存・担当予定ファイル・想定モデルを添えて起動依頼を行えること。
-  - 起動可否は「承認済みの分担表（TASKS.md）」「担当範囲」「hostの空き枠」と照合して判定されること。
+  - 起動可否は「承認済みの担当表」「担当範囲」「hostの空き枠」と照合して判定されること。
 - **実行主体の明確な分離**:
   - 提案仕様におけるワーカー起動は、**ホスト側の起動API（T3 Code `delegate_task` / オーケストレータ等）** が担うものであり、ハブ自身がOSプロセスやプロバイダAPIを叩いてエージェントを生成する構造ではない。
   - 現行HEADのリポジトリコードには、起動依頼メッセージの解釈やホスト起動API呼び出しの連携ロジックは一切実装されていない（**Proposed / 未実装**）。
