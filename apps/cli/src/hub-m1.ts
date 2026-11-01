@@ -70,13 +70,20 @@ function validateProtocol(store: HubStore, manifest: Manifest, event: Observatio
   const d = event.data;
   const events = store.list<Observation>('m1_event').filter(e => e.manifestId === manifest.id);
   const messages = store.list<Message>('message').filter(m => m.runId === manifest.runId);
+  const prompts = events.filter(e => e.kind === 'boundary' && (e.data.stage === 'request' || e.data.stage === 'correction'));
+  const latestPrompt = prompts.at(-1);
+  const understandings = events.filter(e => e.kind === 'understanding');
+  const latestUnderstanding = understandings.at(-1);
+  const hasExecution = events.some(e => e.kind === 'boundary' && e.data.stage === 'execution');
   if (event.kind === 'understanding') {
-    const request = prior(store, manifest, d.requestId, 'boundary', 'request');
+    const request = prior(store, manifest, d.requestId, 'boundary');
+    demand(request.id === latestPrompt?.id, 'm1_order_violation');
     const message = sourceMessage(store, event);
     const original = sourceMessage(store, request);
     demand(message.kind === 'understanding' && original.recipients.includes(message.sender) && message.sender !== original.sender, 'source_mismatch');
     laterMessage(store, message, request);
-    demand(!messages.some(m => m.kind === 'correction' || m.kind === 'result'), 'm1_order_violation');
+    demand(!hasExecution && !understandings.some(e => e.data.requestId === request.id), 'm1_order_violation');
+    demand(!messages.some(m => m.kind === 'result' || m.kind === 'correction' && !prompts.some(p => p.data.stage === 'correction' && p.messageId === m.id)), 'm1_order_violation');
     demand(typeof d.paraphrase === 'string' && d.paraphrase.length > 0 && typeof d.firstAction === 'string' && d.firstAction.length > 0 && Array.isArray(d.uncertainties), 'm1_order_violation');
     keys(d, ['requestId', 'paraphrase', 'firstAction', 'uncertainties', 'uncertaintyEvidence']);
     const snippets = [d.paraphrase, d.firstAction, string(d.uncertaintyEvidence), ...d.uncertainties.map(x => string(x))];
@@ -98,8 +105,11 @@ function validateProtocol(store: HubStore, manifest: Manifest, event: Observatio
       const disclosure = prior(store, manifest, d.disclosureId, 'disclosure');
       const message = sourceMessage(store, event);
       demand(message.sender === store.actor.id && message.kind === (stage === 'execution' ? 'request' : 'correction'), 'source_mismatch');
-      demand(!events.some(e => e.data.stage === stage) && !messages.some(m => m.kind === 'result'), 'm1_order_violation');
+      demand(!hasExecution && !messages.some(m => m.kind === 'result'), 'm1_order_violation');
+      demand(latestPrompt && latestUnderstanding && latestUnderstanding.data.requestId === latestPrompt.id, 'm1_order_violation');
+      if (stage === 'correction') demand(prompts.filter(e => e.data.stage === 'correction').length < 2, 'm1_order_violation');
       laterMessage(store, message, disclosure);
+      laterMessage(store, message, latestUnderstanding);
     } else if (stage === 'result') {
       keys(d, ['stage', 'executionId']);
       const execution = prior(store, manifest, d.executionId, 'boundary', 'execution');
