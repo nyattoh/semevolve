@@ -285,7 +285,7 @@ decision61 P5ドラフト（`acceptance-cases.md`）において指摘され、�
   - D61-P5-F1 として報告された受入ケース側の不整合は、上記第6節の通り現行コードの仕様と完全に照合・整理された。
 - **実機検証の留保**:
   - 本調査は読取専用環境におけるソースコードの静的追跡に基づき完了した。
-  - 実DBの作成、実CLIの実行、並列ワーカーからのSQLite WAL同時書き込み競合等の動的挙動については、制約に従い一切のテスト・実行を行っておらず、「未確認」として保持する。
+  - 現行hubはSQLiteのデフォルトのrollback journalを使う。`prepareStore` は `new DatabaseSync(databasePath)` で新規DBを開き、schemaを作成するが、`journal_mode` は設定していない（`apps/cli/src/hub-store.ts:123-176`、特に156-159行）。実DBの作成・実CLI実行・現行rollback journalでの並列書き込み競合は本調査では未検証である。WALは延期されたconcurrency検証で導入を検討する「提案中の前提条件」であり、現行モードや検証済み機能として扱わない。WALでの試験だけで現行hubを検証したとはしない。
 - **後続タスクへの引継ぎ**:
   - P5の受入ケース修正（P5 correction）は、本調査書に示した現行スキーマ（`records`, `deliveries`）、CLIオプション（`--authority authority.json`）、アクター拘束規則に準拠して記述される必要がある。
   - ワーカー間直接通信および起動依頼の実装は将来の変更（Proposed）であり、既存実装と厳格に分離して扱われる。
