@@ -408,6 +408,7 @@ function buildReport(store: HubStore, manifest: Manifest) {
   const formations = manifests.filter(m => m.scope === 'formation');
   const formationOnly = formations.length ? scopeReport(formations, measurements, events) : null;
   const translations = measurements.filter(e => e.phase === 'human_translation' && e.direction !== 'none');
+  const actualCosts = measurements.flatMap(e => e.actualCost === null ? [] : [{ runId: e.runId, eventId: e.eventId, sourceRef: e.sourceRef, ...e.actualCost }]);
   const taskEvents = events.filter(e => e.manifestId === manifest.id);
   const protocolViolations = store.list<Message>('message').filter(m => m.runId === manifest.runId && ['correction', 'result'].includes(m.kind) && !taskEvents.some(e => e.messageId === m.id && e.kind === 'boundary')).map(m => 'untracked_' + m.kind + ':' + m.id);
   return {
@@ -417,7 +418,7 @@ function buildReport(store: HubStore, manifest: Manifest) {
     measurements: measurements.map(e => ({ ...e, textHash: e.text === null ? null : digest(e.text) })),
     translationTokens: tokenTotals(translations, [], true),
     providerUsage: measurements.filter(e => e.providerUsage !== null).map(e => ({ runId: e.runId, eventId: e.eventId, sourceRef: e.sourceRef, usage: e.providerUsage })),
-    providerInternalContext: null, actualCost: null,
+    providerInternalContext: null, actualCost: actualCosts.length ? actualCosts : null,
     resources: { power: resourceReport(events, 'power'), cloudRAM: resourceReport(events, 'cloudRAM'), cloudGPU: resourceReport(events, 'cloudGPU'), cloudKV: resourceReport(events, 'cloudKV') },
     localMemory: memoryTotals(events), outcome: outcomeReport(taskEvents, manifest),
     protocol: { violations: protocolViolations, offscreenDisclosure: taskEvents.find(e => e.data.stage === 'offscreen')?.data.status ?? 'unknown', assessment: 'recorded_evidence_only' },
