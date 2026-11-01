@@ -5,7 +5,7 @@ import { Hub } from '../../../apps/cli/dist/hub.js';
 import { HubStore, canonical } from '../../../apps/cli/dist/hub-store.js';
 import { participants, manifest, value, event, send, request, understanding, permit, resultMessage } from './helpers.mjs';
 
-function memoryFixture(t) {
+function memoryFixture(t, limit = 2, taskId = 'synthetic-loop') {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   assert.equal(db.prepare('PRAGMA database_list').get().file, '');
@@ -20,7 +20,8 @@ function memoryFixture(t) {
   const f = { db, sender: hubs[0], receiver: hubs[1], other: hubs[2] };
   value(f.sender.importRecords([
     { kind: 'language', value: { id: 'synthetic-v1', definition: 'Synthetic protocol canary.', sourceRef: 'synthetic' } },
-    { kind: 'run', value: { id: 'run-1', taskId: 'synthetic-loop', condition: 'canary', languageVersion: 'synthetic-v1', actors: participants.map(p => p.id), modelSettings: null, rerunOf: null, formationRunId: null } },
+    { kind: 'fixture', value: { id: taskId, input: 'Return the synthetic sum.', successCriteria: ['The response is correct.'], intentChecks: ['synthetic-intent'], roles: { sender: 'sender@canary', recipients: ['receiver@canary'] }, modelSettings: null, limits: { processingSeconds: 10, correctionRounds: limit } } },
+    { kind: 'run', value: { id: 'run-1', taskId, condition: 'canary', languageVersion: 'synthetic-v1', actors: participants.map(p => p.id), modelSettings: null, rerunOf: null, formationRunId: null } },
   ]));
   value(f.sender.captureM1(manifest()));
   request(f); understanding(f); permit(f);
@@ -169,3 +170,62 @@ test('correction loop still permits outcome audit after terminal result', t => {
   value(f.sender.captureM1(event('outcome', 'synthetic-outcome', { status: 'success', resultId: 'result-event', evaluatorId: 'synthetic-operator', rubricHash: 'b'.repeat(64), literal: { expected: { answer: 4 }, observed: { answer: 4 }, evidenceRef: 'synthetic-literal' }, intentChecks: [{ id: 'synthetic-intent', status: 'pass', evidenceRef: 'synthetic-check', messageId: 'result-message' }], stopReason: null })));
   assert.equal(value(f.sender.reportM1({ manifestId: 'task-manifest' })).outcome.status, 'success');
 });
+
+for (const limit of [0, 1, 2]) {
+  test('fixture limit ' + limit + ' permits exactly that many corrections and understanding replies', t => {
+    const f = memoryFixture(t, limit);
+    for (let i = 1; i <= limit; i++) { correction(f, i); echo(f, i); }
+    resultMessage(f);
+    const report = value(f.sender.reportM1({ manifestId: 'task-manifest' }));
+    assert.equal(report.observations.filter(e => e.data.stage === 'correction').length, limit);
+    assert.equal(report.observations.filter(e => e.kind === 'understanding').length, limit + 1);
+    assert.deepEqual(report.protocol.violations, []);
+  });
+  test('fixture limit ' + limit + ' rejects the next correction as a protocol violation', t => {
+    const f = memoryFixture(t, limit);
+    for (let i = 1; i <= limit; i++) { correction(f, i); echo(f, i); }
+    send(f, 'correction-message-' + (limit + 1), 'correction', 'Synthetic excess correction.');
+    refuses(f, correctionInput(limit + 1));
+  });
+}
+
+test('readiness-style fixture with limit one rejects the second correction', t => {
+  const f = memoryFixture(t, 1, 'synthetic-readiness-4');
+  value(f.sender.importRecords(Array.from({ length: 6 }, (_, i) => i).filter(i => i !== 4).map(i => ({
+    kind: 'fixture', value: { id: 'synthetic-readiness-' + i, input: 'Synthetic readiness input.', successCriteria: ['Synthetic success.'], intentChecks: ['Synthetic intent.'], roles: { sender: 'sender@canary', recipients: ['receiver@canary'] }, modelSettings: null, limits: { processingSeconds: 10, correctionRounds: 1 } },
+  }))));
+  assert.equal(f.db.prepare("SELECT count(*) AS n FROM records WHERE kind='fixture'").get().n, 6);
+  correction(f, 1); echo(f, 1);
+  send(f, 'correction-message-2', 'correction', 'Synthetic second correction.');
+  refuses(f, correctionInput(2));
+});
+
+test('fixture lookup uses the run taskId instead of another fixture limit', t => {
+  const f = memoryFixture(t, 0, 'synthetic-selected-task');
+  value(f.sender.importRecords([{ kind: 'fixture', value: { id: 'synthetic-unrelated-task', input: 'Unrelated input.', successCriteria: ['Unrelated success.'], intentChecks: ['Unrelated intent.'], roles: { sender: 'sender@canary', recipients: ['receiver@canary'] }, modelSettings: null, limits: { processingSeconds: 10, correctionRounds: 2 } } }]));
+  send(f, 'correction-message-1', 'correction', 'Synthetic first correction.');
+  refuses(f, correctionInput(1));
+});
+
+test('correction rejects an unresolved task fixture', t => {
+  const f = memoryFixture(t);
+  f.db.prepare("DELETE FROM records WHERE kind='fixture'").run();
+  send(f, 'correction-message-1', 'correction', 'Synthetic first correction.');
+  refuses(f, correctionInput(1));
+});
+
+for (const [label, limit, missingLimits] of [
+  ['negative', -1], ['fractional', 0.5], ['string', '2'], ['null', null],
+  ['missing', undefined], ['unsafe integer', Number.MAX_SAFE_INTEGER + 1], ['missing limits', 2, true],
+]) {
+  test('correction rejects an invalid fixture limit: ' + label, t => {
+    const f = memoryFixture(t);
+    const row = f.db.prepare("SELECT data FROM records WHERE kind='fixture' AND id='synthetic-loop'").get();
+    const fixture = JSON.parse(row.data);
+    if (missingLimits) delete fixture.limits;
+    else fixture.limits.correctionRounds = limit;
+    f.db.prepare("UPDATE records SET data=? WHERE kind='fixture' AND id='synthetic-loop'").run(JSON.stringify(fixture));
+    send(f, 'correction-message-1', 'correction', 'Synthetic first correction.');
+    refuses(f, correctionInput(1));
+  });
+}

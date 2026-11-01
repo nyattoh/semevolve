@@ -1,6 +1,6 @@
 import { canonical, demand, digest, identifier, keys, object, string, strings } from './hub-store.js';
 import type { HubStore } from './hub-store.js';
-import type { Run, Message } from './hub-data.js';
+import type { Run, Message, Fixture } from './hub-data.js';
 import { tokenizer } from './hub-measurement.js';
 import type { Measurement } from './hub-measurement.js';
 
@@ -107,7 +107,12 @@ function validateProtocol(store: HubStore, manifest: Manifest, event: Observatio
       demand(message.sender === store.actor.id && message.kind === (stage === 'execution' ? 'request' : 'correction'), 'source_mismatch');
       demand(!hasExecution && !messages.some(m => m.kind === 'result'), 'm1_order_violation');
       demand(latestPrompt && latestUnderstanding && latestUnderstanding.data.requestId === latestPrompt.id, 'm1_order_violation');
-      if (stage === 'correction') demand(prompts.filter(e => e.data.stage === 'correction').length < 2, 'm1_order_violation');
+      if (stage === 'correction') {
+        const run = accessibleRun(store, manifest.runId);
+        const fixture = store.get<Fixture>('fixture', run.taskId);
+        const limit = fixture?.limits?.correctionRounds;
+        demand(typeof limit === 'number' && Number.isSafeInteger(limit) && limit >= 0 && prompts.filter(e => e.data.stage === 'correction').length < limit, 'm1_order_violation');
+      }
       laterMessage(store, message, disclosure);
       laterMessage(store, message, latestUnderstanding);
     } else if (stage === 'result') {
