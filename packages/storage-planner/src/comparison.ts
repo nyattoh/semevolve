@@ -27,6 +27,7 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
   if (!proposalValid(baseline) || !proposalValid(candidate) || baseline.change !== 'maintain' || baseline.baselineProposalId !== baseline.proposalId) v.invalid('Comparison requires an explicit maintain baseline');
   const s = await p.snapshot();
   const plan = p.options.comparison;
+  if (!Array.isArray(plan.queries) || plan.queries.length === 0) v.invalid('Comparison requires at least one query');
   const originals = await Promise.all(plan.originalIds.map(id => p.original(s, id)));
   for (const proposal of [baseline, candidate]) {
     if (!v.same(v.find(s, 'storage.proposals', proposal.proposalId), proposal) || proposal.baselineProposalId !== baseline.proposalId

@@ -193,23 +193,36 @@ export class Planner {
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
     const inputState = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const checks: StorageInspection[] = [];
-    for (const id of ids) {
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (!id) v.invalid('Missing check ID');
+      const expectedQuery = this.options.comparison.queries[i];
       const c = v.find(s, 'storage.inspections', id);
-      if (!v.object(c) || !v.object(c.request) || !v.object(c.result) || c.checkId !== id || c.mappingDigest !== digestJson(mapping)
+      if (!v.object(c) || !v.object(c.request) || !v.object(c.request.retrieved) || !v.object(c.result) || c.checkId !== id || c.mappingDigest !== digestJson(mapping)
         || c.originalSetDigest !== digestJson(originals) || c.querySetDigest !== digestJson(this.options.comparison.queries)
-        || c.request.criteriaDigest !== this.options.comparison.criteriaDigest || c.request.evaluatorVersion !== this.options.comparison.evaluatorVersion || c.request.scope !== this.options.scope) v.invalid('Mismatched conformance check');
+        || c.request.criteriaDigest !== this.options.comparison.criteriaDigest || c.request.evaluatorVersion !== this.options.comparison.evaluatorVersion || c.request.scope !== this.options.scope
+        || !v.same((c.request.retrieved as any).query, expectedQuery)) v.invalid('Mismatched conformance check');
       this.checkResult(c.result as unknown as StorageCheckResult, c.request as unknown as StorageInspection['request']);
       if (!this.passing(c.result as unknown as StorageCheckResult)) v.unavailable('Storage combination is not independently verified');
       checks.push(c as unknown as StorageInspection);
     }
     const final = inputState ? await this.revalidateInspection(inputState, checks) : s;
-    await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion });
+    const conformanceRecord: Record<string, unknown> = { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion };
+    if (!this.options.inspectionEligibility) {
+      const inspectionPlanDigest = digestJson({ queries: this.options.comparison.queries, expectedConditions: this.options.comparison.expectedConditions });
+      conformanceRecord.inspectionPlanDigest = inspectionPlanDigest;
+    }
+    await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), conformanceRecord);
   }
   passing(result: StorageCheckResult): boolean { return result.literalRestoration === 'pass' && result.meaningPreservation === 'pass' && result.retrievalCorrectness === 'pass'; }
   async verified(s: StoreSnapshot, mapping: Mapping): Promise<void> {
     await this.registered(s, mapping);
-    const found = v.rows(s, 'storage.conformance').some(c => v.object(c) && c.mappingDigest === digestJson(mapping)
-      && c.criteriaDigest === this.options.comparison.criteriaDigest && c.evaluatorVersion === this.options.comparison.evaluatorVersion);
+    const inspectionPlanDigest = digestJson({ queries: this.options.comparison.queries, expectedConditions: this.options.comparison.expectedConditions });
+    const found = v.rows(s, 'storage.conformance').some(c => {
+      if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest || c.evaluatorVersion !== this.options.comparison.evaluatorVersion) return false;
+      if (!this.options.inspectionEligibility && typeof c.inspectionPlanDigest === 'string' && c.inspectionPlanDigest !== inspectionPlanDigest) return false;
+      return true;
+    });
     if (!found) v.unavailable('Unverified language/rule/storage combination');
     if (this.options.inspectionEligibility) {
       const head = this.headAt(s);
@@ -237,7 +250,7 @@ export class Planner {
           if (!v.object(check) || check.checkId !== id || !v.object(check.request) || !v.object(check.result) || check.mappingDigest !== digestJson(mapping)
             || check.request.taskId !== this.options.taskId || check.request.scope !== this.options.scope
             || check.querySetDigest !== digestJson(this.options.comparison.queries) || !v.same(check.request.expectedConditions, this.options.comparison.expectedConditions)
-            || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion) return v.unavailable('Conformance inspection identity is unavailable');
+            || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion) { current = false; break; }
           if (!await this.inspectionCurrent(s, check as unknown as StorageInspection) || !this.passing(check.result as unknown as StorageCheckResult)) current = false;
         }
         if (current) return;
