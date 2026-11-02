@@ -144,14 +144,14 @@
   - `UPDATE deliveries SET acked_at=COALESCE(acked_at,?) WHERE message_id=? AND recipient_id=?`（`apps/cli/src/hub.ts:199`）。
   - パラメータ: `new Date().toISOString()`, `id`, `this.store.actor.id`。
   - すでに `acked_at` が記録されている場合は上書きせず既存値を維持（`COALESCE` による冪等性）。
-  - ※注意: `applied_at` は `ack` 操作では一切変更されない。`recordMeasurement` が既に設定していない限り `NULL` であり、設定済みの場合はその値を維持する。`applied_at` の記録は `recordMeasurement`（`direction === 'input'`）の呼出時のみに行われる（`apps/cli/src/hub.ts:96-97,157-160,190-200`）。
+  - ※注意: `applied_at` は `ack` 操作では一切変更されない。`recordMeasurement`（`direction === 'input'`）による初回記録時のみ `COALESCE(applied_at, ?)` で設定され、再記録では上書きされず既存値を保持する。したがって、`ack` の戻り値 `appliedAt` は、`recordMeasurement` が先に実行されていれば文字列、未実行であれば `NULL` となる（`apps/cli/src/hub.ts:96-97,157-160,190-200`）。
 - **戻り値**:
   ```typescript
   interface Delivery {
     messageId: string;
     recipientId: string;
     ackedAt: string | null; // ISO文字列
-    appliedAt: string | null; // null
+    appliedAt: string | null; // ackでは変更されない。recordMeasurement(direction: input)の初回記録時のみ設定され、その後は保持される
     understanding: null;
     taskCompletion: null;
     evaluation: null;

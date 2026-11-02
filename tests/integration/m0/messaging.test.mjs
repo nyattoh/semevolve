@@ -86,3 +86,29 @@ test('a worker cannot increase the recipients fixed on its run', t => {
   assert.equal(f.receiver.send({ ...message, runId: 'restricted-run', recipients: ['other@canary'] }).error.code, 'unauthorised');
   assert.deepEqual(value(f.other.inbox()), []);
 });
+
+test('ack preserves appliedAt set by recordMeasurement and does not change it', t => {
+  const f = ready(t);
+  value(f.sender.send(message));
+  const inputEvent = { runId: 'run-1', eventId: 'event-applied', occurrenceId: 'occurrence-applied', messageId: 'message-1', recipientId: 'receiver@canary', phase: 'task', direction: 'input', category: 'request', text: 'M0_SYNTHETIC_A', textRef: 'synthetic-literal', providerUsage: null, startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:00:10.000Z', actualCost: null, sourceRef: 'synthetic-observation' };
+  value(f.receiver.recordMeasurement(inputEvent));
+  const deliveryBeforeAck = value(f.receiver.inspect()).deliveries[0];
+  assert.equal(typeof deliveryBeforeAck.appliedAt, 'string');
+  assert.equal(deliveryBeforeAck.ackedAt, null);
+  const ack = value(f.receiver.ack({ messageId: 'message-1' }));
+  assert.equal(typeof ack.ackedAt, 'string');
+  assert.equal(ack.appliedAt, deliveryBeforeAck.appliedAt);
+  assert.deepEqual(value(f.receiver.inbox()), []);
+});
+
+test('recordMeasurement does not change appliedAt on re-record', t => {
+  const f = ready(t);
+  value(f.sender.send(message));
+  const inputEvent = { runId: 'run-1', eventId: 'event-rerecord', occurrenceId: 'occurrence-rerecord', messageId: 'message-1', recipientId: 'receiver@canary', phase: 'task', direction: 'input', category: 'request', text: 'M0_SYNTHETIC_A', textRef: 'synthetic-literal', providerUsage: null, startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:00:10.000Z', actualCost: null, sourceRef: 'synthetic-observation' };
+  value(f.receiver.recordMeasurement(inputEvent));
+  const firstAppliedAt = value(f.receiver.inspect()).deliveries[0].appliedAt;
+  assert.equal(typeof firstAppliedAt, 'string');
+  value(f.receiver.recordMeasurement(inputEvent));
+  const secondAppliedAt = value(f.receiver.inspect()).deliveries[0].appliedAt;
+  assert.equal(secondAppliedAt, firstAppliedAt);
+});
