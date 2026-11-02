@@ -108,7 +108,8 @@ test('recordMeasurement does not change appliedAt on re-record', t => {
   value(f.receiver.recordMeasurement(inputEvent));
   const firstAppliedAt = value(f.receiver.inspect()).deliveries[0].appliedAt;
   assert.equal(typeof firstAppliedAt, 'string');
-  value(f.receiver.recordMeasurement(inputEvent));
+  const secondEvent = { ...inputEvent, eventId: 'event-rerecord-2', occurrenceId: 'occurrence-rerecord-2' };
+  value(f.receiver.recordMeasurement(secondEvent));
   const secondAppliedAt = value(f.receiver.inspect()).deliveries[0].appliedAt;
   assert.equal(secondAppliedAt, firstAppliedAt);
 });
