@@ -25,6 +25,7 @@ const usage = (elapsedMs = 0): Usage => ({ inputTokens: null, outputTokens: null
 export async function compare(p: Planner, left: StorageProposal, right: StorageProposal): Promise<StorageComparison> {
   const baseline = structuredClone(left), candidate = structuredClone(right);
   if (!proposalValid(baseline) || !proposalValid(candidate) || baseline.change !== 'maintain' || baseline.baselineProposalId !== baseline.proposalId) v.invalid('Comparison requires an explicit maintain baseline');
+  if (baseline.proposalId === candidate.proposalId) v.invalid('Comparison requires distinct proposals');
   const s = await p.snapshot();
   const plan = p.options.comparison;
   if (!Array.isArray(plan.queries) || plan.queries.length === 0) v.invalid('Comparison requires at least one query');

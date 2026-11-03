@@ -178,8 +178,9 @@ export class Planner {
   }
   inspectionPlanDigest(originals: readonly OriginalInput[]): string {
     const plan = this.options.comparison;
-    if (!Array.isArray(plan.originalIds) || plan.originalIds.length === 0 || originals.length === 0) v.invalid('Inspection plan requires at least one original');
-    return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions, originalIds: plan.originalIds, originalSetDigest: digestJson(originals) });
+    const originalIds = originals.map(original => original.message.envelope.message_id);
+    if (originalIds.length === 0 || !v.unique(originalIds)) v.invalid('Inspection plan requires at least one original');
+    return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions, originalIds, originalSetDigest: digestJson(originals) });
   }
   async inspectMapping(input: Mapping): Promise<readonly StorageInspection[]> {
     const mapping = structuredClone(input);
@@ -245,7 +246,7 @@ export class Planner {
             const check = v.find(s, 'storage.inspections', id);
             if (!v.object(check) || check.checkId !== id || !v.object(check.request) || !v.object(check.result)
               || check.mappingDigest !== digestJson(mapping) || check.request.taskId !== this.options.taskId || check.request.scope !== this.options.scope
-              || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion
+              || !v.digest(check.request.criteriaDigest) || !v.text(check.request.evaluatorVersion)
               || !await this.inspectionCurrent(s, check as unknown as StorageInspection)) return v.unavailable('Live projection requires current canonical inspection');
           }
         }

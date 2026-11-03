@@ -198,6 +198,57 @@ test('digest-less conformance does not authorise standalone store', async () => 
   await f.store.close();
 });
 
+test('projection completion rejects a copy grant revision that changed during inspection', async () => {
+  const evaluator = evaluationDouble();
+  let arm = false;
+  const f = await migrationFixture({ evaluator: { ...evaluator, async evaluateStorage(request) {
+    const result = await evaluator.evaluateStorage(request);
+    if (arm) {
+      f.options.policy.authorise = async () => ({ allowed: true, policyRevision: 2 });
+      const read = f.options.references.readGrant;
+      f.options.references.readGrant = async (snapshot, ref) => {
+        const grant = await read(snapshot, ref);
+        if (grant.ok && grant.value) return { ok: true, value: { ...grant.value, policyRevision: 2 } };
+        return grant;
+      };
+    }
+    return result;
+  } } });
+  arm = true;
+  reject(await f.runtime.migration.prepare(await migrationRequest(f)), 'unavailable');
+  assert.equal(rows(await f.snapshot(), 'storage.migrations').find(record => record.migration.migrationId === 'migration-1').phase, 'copy_pending');
+  assert.equal(rows(await f.snapshot(), 'storage.operations').some(record => record.kind === 'receipt'), false);
+  await f.store.close();
+});
+
+test('shadow conformance does not authorise an original the shadow did not inspect', async () => {
+  const f = await migrationFixture();
+  await f.append('host.originals', 'message-2', original('message-2'));
+  const runtime = createStoragePlanner({ ...f.options, comparison: { ...f.options.comparison, originalIds: ['message-1', 'message-2'] } });
+  const prepared = take(await runtime.migration.prepare(await migrationRequest(f)));
+  take(await runtime.migration.catchUp(prepared.migrationId, (await f.snapshot()).revision));
+  take(await runtime.migration.switch({ migrationId: prepared.migrationId, expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }));
+  reject(await runtime.store('message-2', targetMapping), 'unavailable');
+  reject(await runtime.retrieve({ all: true }, targetMapping), 'unavailable');
+  await f.store.close();
+});
+
+test('current conformance restores a migrated live mapping after a criteria upgrade', async () => {
+  const f = await recordingFixture();
+  await f.certify();
+  await f.certify(targetMapping);
+  take(await f.runtime.store('message-1', mapping()));
+  const prepared = take(await f.runtime.migration.prepare(await migrationRequest(f)));
+  take(await f.runtime.migration.catchUp(prepared.migrationId, (await f.snapshot()).revision));
+  take(await f.runtime.migration.switch({ migrationId: prepared.migrationId, expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }));
+  const upgraded = createStoragePlanner({ ...f.options, comparison: { ...f.options.comparison, criteriaDigest: digestJson('storage-criteria-v2') } });
+  const checks = take(await upgraded.inspectMapping(targetMapping));
+  take(await upgraded.recordConformance(targetMapping, checks.map(c => c.checkId)));
+  const selected = take(await upgraded.retrieve({ all: true }, targetMapping));
+  assert.deepEqual(selected.map(unit => unit.source.messageId), ['message-1']);
+  await f.store.close();
+});
+
 test('shadow conformance stays bound to the inspection plan that produced it', async () => {
   const f = await migrationFixture();
   const prepared = take(await f.runtime.migration.prepare(await migrationRequest(f)));

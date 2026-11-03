@@ -249,7 +249,9 @@ export class Migrations {
     const final = captured ? await p.revalidateInspection(captured, checks) : await p.snapshot();
     this.fence(final, state, s.revision);
     if (!v.same(p.headAt(final), state.sourceHead) || digestJson(await this.dataset(final)) !== state.datasetDigest) return v.unavailable('Delta changed during shadow inspection; reconcile and catch up');
-    await this.permit(final, 'copy', p.options.copyAuthorisationRef);
+    const authorised = await this.permit(final, 'copy', p.options.copyAuthorisationRef);
+    const intentRecord = v.find(final, 'storage.operations', `${state.intent}/intent`);
+    if (!v.object(intentRecord) || intentRecord.policyRevision !== authorised) return v.unavailable('Projection authority changed before completion');
     await this.unchanged(final, state);
     const pass = checks.length > 0 && checks.every(c => p.passing(c.result));
     const migration: Migration = { ...state.migration, checkRefs: [...state.migration.checkRefs, ...checks.map(c => c.checkId)], pendingOperation: null,
@@ -264,7 +266,7 @@ export class Migrations {
         { kind: 'receipt', operation, executionId: state.intent, migrationId: migration.migrationId, datasetDigest: state.datasetDigest, generation: state.generation, revision: final.revision + 1, pass }));
     if (pass) {
       const planOriginals = await Promise.all(p.options.comparison.originalIds.map(id => p.original(final, id)));
-      mutations.push(p.insert('storage.conformance', state.intent, { mappingDigest: digestJson(state.targetMapping), ids: checks.map(c => c.checkId), criteriaDigest: p.options.comparison.criteriaDigest, evaluatorVersion: p.options.comparison.evaluatorVersion, inspectionPlanDigest: p.inspectionPlanDigest(planOriginals) }));
+      if (v.same(state.dataset.originals, planOriginals)) mutations.push(p.insert('storage.conformance', state.intent, { mappingDigest: digestJson(state.targetMapping), ids: checks.map(c => c.checkId), criteriaDigest: p.options.comparison.criteriaDigest, evaluatorVersion: p.options.comparison.evaluatorVersion, inspectionPlanDigest: p.inspectionPlanDigest(state.dataset.originals) }));
     }
     await p.commit(final, mutations, `${operation}.checked`, { intent: state.intent, migrationId: migration.migrationId, pass, checkRefs: checks.map(c => c.checkId) });
     return migration;

@@ -77,6 +77,13 @@ test('L3 comparison certifies the first retrieve for each query, not a later suc
   await f.store.close();
 });
 
+test('L3 rejects a comparison whose baseline and candidate are the same proposal', async () => {
+  const f = await setup();
+  reject(await f.runtime.compare(proposal(), proposal()), 'invalid_input');
+  assert.equal(rows(await f.snapshot(), 'storage.comparisons').length, 0);
+  await f.store.close();
+});
+
 test('L3 rejects unequal query, inputs, budget and baseline conditions', async () => {
   const f = await setup();
   for (const changes of [{ querySetDigest: digestJson('other') }, { originalSetDigest: digestJson('other') }, { budgetRef: 'other' }, { baselineProposalId: 'other' }]) {
