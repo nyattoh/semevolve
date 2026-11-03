@@ -1,4 +1,4 @@
-import { hostIdentity } from '@semevolve/core';
+import { hostIdentity, uniqueManifest } from '@semevolve/core';
 import type { JsonValue, Result, TaskId, TaskStore } from '@semevolve/core';
 import { invalid, ok, records, unavailable } from './records.js';
 import * as v from './validation.js';
@@ -21,7 +21,7 @@ export function createRoleBoundary(options: RoleBoundaryOptions): RoleBoundary {
   const tools = structuredClone(options.tools);
   const isolation = structuredClone(options.isolation);
   if (documents.some(d => !/^[a-z0-9-]+$/.test(d.id) || !v.json(d.body) || !v.strings(d.readers) || typeof d.evaluatorOnly !== 'boolean')
-    || new Set(documents.map(d => d.id)).size !== documents.length || !['pass', 'fail', 'unverified'].includes(isolation.verdict)) throw new Error('Invalid role boundary configuration');
+    || !uniqueManifest(documents.map(d => d.id)) || !['pass', 'fail', 'unverified'].includes(isolation.verdict)) throw new Error('Invalid role boundary configuration');
   const log = records(options.store, hostIdentity, options.taskId, 8);
   async function record<T>(operation: string, role: string, result: Result<T>): Promise<Result<T>> {
     for (let i = 0; i < 8; i++) {

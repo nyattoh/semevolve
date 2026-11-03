@@ -1,4 +1,4 @@
-import { canonicalJson, isUtcTimestamp } from '@semevolve/core';
+import { canonicalJson, isUtcTimestamp, uniqueManifest } from '@semevolve/core';
 import type { CheckExecution, EvidenceRef, Interpretation, JsonObject, JsonValue, Usage } from '@semevolve/core';
 
 export const object = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -7,7 +7,7 @@ export const digest = (x: unknown): x is string => typeof x === 'string' && /^[a
 export function implementationFingerprint(x: unknown): x is { readonly peerId: string; readonly provider: string; readonly modelId: string | null; readonly cliVersion: string | null; readonly settingsDigest: string; readonly introductionDigest: string } {
   return object(x) && text(x.peerId) && text(x.provider) && (x.modelId === null || text(x.modelId)) && (x.cliVersion === null || text(x.cliVersion)) && digest(x.settingsDigest) && digest(x.introductionDigest);
 }
-export const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(text) && new Set(x).size === x.length;
+export const strings = (x: unknown): x is string[] => Array.isArray(x) && x.every(text) && uniqueManifest(x);
 export function json(x: unknown): x is JsonValue {
   try { canonicalJson(x as JsonValue); return true; } catch { return false; }
 }

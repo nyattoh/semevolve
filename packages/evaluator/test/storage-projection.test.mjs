@@ -25,7 +25,7 @@ for (const query of [{ all: true }, { messageId: 'public-message' }, { messageId
 const changes = [
   ['raw literal corruption', r => { r.retrieved.literals['public-message'] += '!'; }, ['fail', 'pass', 'pass']],
   ['literal unavailable', r => { r.retrieved.literals['public-message'] = null; }, ['inconclusive', 'pass', 'pass']],
-  ['literal missing', r => { delete r.retrieved.literals['public-message']; }, ['inconclusive', 'pass', 'pass']],
+  ['literal missing', r => { delete r.retrieved.literals['public-message']; }, ['fail', 'pass', 'pass']],
   ['meaning observation missing', r => { delete r.retrieved.units[0].representation.meaning; }, ['pass', 'inconclusive', 'pass']],
   ['meaning explicitly null', r => { r.retrieved.units[0].representation.meaning = null; }, ['pass', 'fail', 'pass']],
   ['units missing', r => { delete r.retrieved.units; }, ['pass', 'inconclusive', 'inconclusive']],

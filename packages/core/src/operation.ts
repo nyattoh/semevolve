@@ -1,5 +1,6 @@
 import { setImmediate } from 'node:timers/promises';
 import { completionProven } from './completion.js';
+import type { BoundIdentity } from './completion.js';
 import type { HostIdentity, JsonObject, Result, TaskId } from './contracts/identity.js';
 import type { StoreSnapshot, TaskStore } from './contracts/task-store.js';
 
@@ -14,7 +15,7 @@ export interface OperationSpec<T> {
   readonly taskId: TaskId;
   readonly recover: 'rerun' | 'unknown';
   readonly pendingReason: string;
-  readonly identity: JsonObject;
+  readonly identity: BoundIdentity;
   readonly steps: readonly string[];
   intent(snapshot: StoreSnapshot): JsonObject | null;
   same(stored: JsonObject): boolean;

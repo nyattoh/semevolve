@@ -1,4 +1,4 @@
-import { canonicalJson, digestJson, isUtcTimestamp, sameManifest } from '@semevolve/core';
+import { digestJson, isUtcTimestamp, sameManifest, uniqueManifest } from '@semevolve/core';
 import type { JsonObject, JsonValue, Verdict } from '@semevolve/core';
 import type { StorageCheckRequest } from './contracts/evaluation.js';
 import * as v from './validation.js';
@@ -18,7 +18,7 @@ export function projectionConditions(x: unknown): x is ProjectionConditions {
     && Array.isArray(x.queries) && x.queries.length > 0
     && x.queries.every(q => v.record(q) && Object.keys(q).length === 2 && v.json(q.query) && v.strings(q.messageIds)
       && q.messageIds.every(id => v.record(x.payloads) && Object.hasOwn(x.payloads, id)))
-    && new Set(x.queries.map(q => v.record(q) ? canonicalJson(q.query!) : '')).size === x.queries.length;
+    && uniqueManifest(x.queries.map(q => v.record(q) ? q.query! : null));
 }
 
 export interface ProjectionOriginal {
@@ -49,7 +49,7 @@ export function projectionOriginals(request: StorageCheckRequest): Originals {
     originals.push({ messageId: envelope.message_id, languageVersionId: envelope.language_version_id, payload: envelope.payload,
       payloadDigest: row.payloadDigest, eventRefs: row.eventRefs, interpretationRefs: row.interpretationRefs, checkRefs: row.checkRefs });
   }
-  if (originals.length === 0 || new Set(originals.map(o => o.messageId)).size !== originals.length) return { kind: 'corrupt' };
+  if (originals.length === 0 || !uniqueManifest(originals.map(o => o.messageId))) return { kind: 'corrupt' };
   return { kind: 'valid', originals, versions: input.versions };
 }
 
@@ -82,9 +82,13 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
     return { literalRestoration: verdict, meaningPreservation: verdict, retrievalCorrectness: verdict, limitation };
   }
   const literals = input.literals;
-  const literalRestoration = literals === undefined || literals === null ? 'inconclusive' : !v.record(literals) ? 'fail'
-    : combine(parsed.originals.map(o => !Object.hasOwn(literals, o.messageId) || literals[o.messageId] === null ? 'inconclusive'
-      : literals[o.messageId] === o.payload ? 'pass' : 'fail'));
+  const messageIds = parsed.originals.map(original => original.messageId);
+  const literalRestoration = literals === undefined || literals === null ? 'inconclusive' : !v.record(literals) || !sameManifest(Object.keys(literals), messageIds) ? 'fail'
+    : combine(messageIds.map(messageId => {
+      const restored = literals[messageId];
+      const payload = parsed.originals.find(original => original.messageId === messageId)?.payload;
+      return restored === null ? 'inconclusive' : restored === payload ? 'pass' : 'fail';
+    }));
   if (!Object.hasOwn(input, 'units') || input.units === null) return { literalRestoration, meaningPreservation: 'inconclusive', retrievalCorrectness: 'inconclusive', limitation };
   if (!Array.isArray(input.units)) return { literalRestoration, meaningPreservation: 'fail', retrievalCorrectness: 'fail', limitation };
   const meanings: Verdict[] = [];

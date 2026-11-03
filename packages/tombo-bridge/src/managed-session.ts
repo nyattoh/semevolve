@@ -5,7 +5,7 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { digestJson, sameManifest } from '@semevolve/core';
+import { digestJson, sameManifest, uniqueManifest } from '@semevolve/core';
 import type { JsonObject, JsonValue } from '@semevolve/core';
 import type { TomboInspectionInput } from './contracts/tombo.js';
 import { inspectionSteps } from './runtime.js';
@@ -116,7 +116,7 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
       || !sameManifest([...retrievedIds, ...unresolvedIds], input.evidence.map(item => item.evidenceId))) throw new Error('Inspection evidence does not match the expected manifest');
     const presented = mapEvidence(input.evidence, metadata, readerId);
     const presentedIds = presented.flatMap(item => v.record(item) && v.text(item.id) ? [item.id] : []);
-    if (presentedIds.length !== presented.length || !sameManifest(presentedIds, retrievedIds)) throw new Error('Inspection evidence does not match the expected manifest');
+    if (!uniqueManifest(presentedIds) || presentedIds.length !== presented.length || !sameManifest(presentedIds, retrievedIds)) throw new Error('Inspection evidence does not match the expected manifest');
     const status = await command(['status'], true);
     if (inspectionCommitted(status)) return { actual: status, steps: [...inspectionSteps] };
     const packet = { ...packetBase, evidence: presented, proposedAnswer: JSON.stringify({ transmissionContract: input.transmissionContract, interpretation: input.interpretation, proposedAction: input.proposedAction, contextRevision: input.contextRevision,

@@ -1,4 +1,4 @@
-import { completionProven, hostIdentity, isUtcTimestamp, runOperation } from '@semevolve/core';
+import { bindIdentity, completionProven, hostIdentity, isUtcTimestamp, runOperation, sameFields, sameManifest, uniqueManifest } from '@semevolve/core';
 import type { CheckExecution, CheckId, ExecutionId, HostIdentity, Interpretation, InvocationId, JsonObject, JsonValue, LanguageVersionId, MessageId, PeerId, ReservationId, Result, StoreSnapshot, TaskId, TaskStore, Usage } from '@semevolve/core';
 import type { OperationSpec, OperationStep } from '@semevolve/core';
 import type { EvaluationPort, EvaluationRequest, EvidenceWithdrawal, StorageCheckRequest, StorageCheckResult } from './contracts/evaluation.js';
@@ -83,7 +83,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
   if (![run.runId, run.taskId, run.languageVersionId, run.evaluatorVersion, run.scope, run.evaluatorId].every(v.text)
     || !v.digest(run.criteriaDigest) || !v.digest(run.testSetDigest) || run.synthetic !== true || run.checkerId !== 'conditions-v1'
     || !v.record(configuredConditions) || !['transmission', 'factuality', 'authorisation', 'task_outcome'].every(d => conditions(configuredConditions[d]))
-    || !storageConditions(configuredConditions.storage) || identity.digest(configuredConditions) !== run.criteriaDigest
+    || !storageConditions(configuredConditions.storage) || !sameFields(['criteriaDigest'] as const, { criteriaDigest: identity.digest(configuredConditions) }, { criteriaDigest: run.criteriaDigest })
     || !Number.isSafeInteger(attempts) || attempts < 1 || attempts > 64) throw new Error('Invalid evaluator configuration');
   const expected = configuredConditions;
   const log = records(options.store, identity, run.taskId, attempts);
@@ -102,7 +102,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     return recorded.ok ? invalid(reason) : recorded;
   }
   async function fixed(request: EvaluationRequest | StorageCheckRequest): Promise<Result<void>> {
-    if (request.criteriaDigest !== run.criteriaDigest || request.evaluatorVersion !== run.evaluatorVersion) {
+    if (!sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: request.criteriaDigest, evaluatorVersion: request.evaluatorVersion }, { criteriaDigest: run.criteriaDigest, evaluatorVersion: run.evaluatorVersion })) {
       const r = await log.insert('evaluator.run-invalidations', identity.newId('event'), { schema: 1, runId: run.runId, reason: 'Criteria or evaluator changed', request: v.serialise(request) }, 'evaluator.comparison_invalid');
       return r.ok ? invalid('Criteria or evaluator changed within a fixed run') : r;
     }
@@ -134,7 +134,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const requestDigest = identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request }));
     const reserved = await options.store.snapshot(); if (!reserved.ok) return reserved;
     const claimed = read(reserved.value, 'evaluator.requests', request.executionId);
-    if (claimed && (claimed.requestDigest !== requestDigest || !v.same(claimed.request, request))) return log.rejected({ code: 'id_collision', id: request.executionId }, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, requestDigest });
+    if (claimed && (!sameFields(['requestDigest'] as const, { requestDigest: claimed.requestDigest }, { requestDigest }) || !v.same(claimed.request, request))) return log.rejected({ code: 'id_collision', id: request.executionId }, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, requestDigest });
     const evidence: { collection: string; id: string; value: JsonObject }[] = [];
     for (const ref of request.evidence) {
       const value = { schema: 1, evidence: v.serialise(ref) };
@@ -196,7 +196,8 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     if (!v.text(request.evidenceId) || !v.text(request.reason) || !isUtcTimestamp(request.withdrawnAt)) return invalid('Invalid evidence withdrawal');
     const id = identity.digest(v.serialise(request));
     const intent = { schema: 1, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt };
-    const operationIdentity = { withdrawalId: id, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt };
+    const withdrawalIdentityKeys = ['withdrawalId', 'evidenceId', 'reason', 'withdrawnAt'] as const;
+    const operationIdentity = bindIdentity(withdrawalIdentityKeys, { withdrawalId: id, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt });
     const steps = ['observed'] as const;
     const succeeded = (snapshot: StoreSnapshot) => read(snapshot, 'evaluator.withdrawal-reconciliation', identity.digest([id, true]));
     return runOperation(options.store, identity, attempts, hooked({
@@ -214,15 +215,15 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       },
       async effect() {
         const current = await options.store.snapshot(); if (!current.ok) return current;
-        if (succeeded(current.value)) return ok({ schema: 1, applied: true, reason: null, identity: operationIdentity, steps: [...steps] });
+        if (succeeded(current.value)) return ok({ schema: 1, applied: true, reason: null, identity: operationIdentity.identity, steps: [...steps] });
         const done = options.invalidateEvidence ? await options.invalidateEvidence(request) : unavailable('TOMBO invalidation not connected');
-        return ok({ schema: 1, applied: done.ok, reason: done.ok ? null : v.serialise(done.error), identity: operationIdentity, steps: [...steps] });
+        return ok({ schema: 1, applied: done.ok, reason: done.ok ? null : v.serialise(done.error), identity: operationIdentity.identity, steps: [...steps] });
       },
       async finish(_intent, payload) {
         const current = await options.store.snapshot(); if (!current.ok) return current;
         if (succeeded(current.value)) return ok(undefined);
         if (payload.applied === true && payload.reason === null) {
-          const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: true, reason: null, identity: operationIdentity, steps: [...steps] };
+          const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: true, reason: null, identity: operationIdentity.identity, steps: [...steps] };
           const recorded = await log.insert('evaluator.withdrawal-reconciliation', identity.digest([id, true]), observation, 'evaluator.withdrawal_reconciled');
           return recorded.ok ? ok(undefined) : recorded;
         }
@@ -244,14 +245,16 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const configuration = read(s.value, 'evaluator.runs', run.runId)?.configuration;
     const proven = source && evaluationRequest(source.request) ? executionIdentity(value => identity.digest(value), run, source.request, 'evaluation') : null;
     const persisted = source && evaluationRequest(source.request) && validRun(configuration) ? executionIdentity(value => identity.digest(value), configuration, source.request, 'evaluation') : null;
-    if (!source || !evaluationRequest(source.request) || !proven || !persisted || !completionProven({ identity: persisted, steps: [...evaluationSteps] }, { identity: proven, steps: [...evaluationSteps] })
+    if (!source || !evaluationRequest(source.request) || !proven || !persisted || !completionProven({ identity: persisted.identity, steps: [...evaluationSteps] }, { identity: proven, steps: [...evaluationSteps] })
       || !completionProven(saved.value, { identity: proven, steps: [...evaluationSteps] })
-      || source.runId !== run.runId || source.requestDigest !== saved.value.requestDigest
-      || source.requestDigest !== identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request: source.request }))
-      || source.request.criteriaDigest !== run.criteriaDigest || source.request.evaluatorVersion !== run.evaluatorVersion || source.request.inputDigest !== execution.inputDigest
+      || !sameFields(['runId', 'requestDigest'] as const, { runId: source.runId, requestDigest: source.requestDigest }, { runId: run.runId, requestDigest: saved.value.requestDigest })
+      || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request: source.request })) })
+      || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: source.request.criteriaDigest, evaluatorVersion: source.request.evaluatorVersion }, { criteriaDigest: run.criteriaDigest, evaluatorVersion: run.evaluatorVersion })
+      || source.request.inputDigest !== execution.inputDigest
       || source.request.taskId !== execution.taskId || source.request.scope !== execution.result.scope || source.request.dimension !== execution.result.dimension
       || source.request.targetMessageId !== execution.result.targetMessageId || source.request.languageVersionId !== execution.result.languageVersionId
-      || execution.result.evaluatorVersion !== run.evaluatorVersion || source.request.inputDigest !== identity.digest(evaluationInput(source.request))
+      || !sameFields(['evaluatorVersion'] as const, { evaluatorVersion: execution.result.evaluatorVersion }, { evaluatorVersion: run.evaluatorVersion })
+      || source.request.inputDigest !== identity.digest(evaluationInput(source.request))
       || !v.same(source.request.expectedConditions, expected[source.request.dimension])) return unavailable('Canonical request and result linkage is invalid');
     const refs = withdrawn(s.value);
     const affected = execution.result.evidenceIds.filter(e => refs.has(e));
@@ -259,7 +262,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const pending = affected.some(evidenceId => !s.value.entries.some(e => e.key.collection === 'evaluator.withdrawal-reconciliation' && v.record(e.value) && e.value.evidenceId === evidenceId && e.value.applied === true));
     return ok({ eligible: execution.result.verdict === 'pass' && affected.length === 0 && !invalidated, recheckRequired: affected.length > 0 || invalidated,
       reason: affected.length ? 'Evidence withdrawn; a new execution ID is required' : invalidated ? 'Comparison run invalidated' : execution.result.verdict !== 'pass' ? 'Check did not pass' : null,
-      runId: run.runId, testSetDigest: v.text(proven.testSetDigest) ? proven.testSetDigest : run.testSetDigest, execution: structuredClone(execution), request: structuredClone(source.request), tomboInvalidationPending: pending });
+      runId: run.runId, testSetDigest: v.text(proven.identity.testSetDigest) ? proven.identity.testSetDigest : run.testSetDigest, execution: structuredClone(execution), request: structuredClone(source.request), tomboInvalidationPending: pending });
   }
   function referencedStorageCheck(snapshot: StoreSnapshot, checkId: string, original: ProjectionOriginal): { runId: string; evidenceIds: readonly string[] } {
     const matches = snapshot.entries.filter(e => e.key.collection === 'evaluator.executions' && v.record(e.value) && v.execution(e.value.result) && e.value.result.result.checkId === checkId);
@@ -273,16 +276,18 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const configuration = read(snapshot, 'evaluator.runs', source.runId)?.configuration;
     if (!validRun(configuration) || configuration.runId !== source.runId || source.kind !== 'evaluation'
       || execution.executionId !== matches[0]!.key.id || req.executionId !== execution.executionId
-      || source.requestDigest !== saved.requestDigest || source.requestDigest !== identity.digest(v.serialise({ runId: source.runId, kind: 'evaluation', request: req }))
+      || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: saved.requestDigest })
+      || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: identity.digest(v.serialise({ runId: source.runId, kind: 'evaluation', request: req })) })
       || req.taskId !== run.taskId || execution.taskId !== run.taskId || configuration.taskId !== run.taskId
       || req.scope !== run.scope || execution.result.scope !== run.scope || configuration.scope !== run.scope
       || req.targetMessageId !== original.messageId || execution.result.targetMessageId !== original.messageId
       || req.languageVersionId !== original.languageVersionId || execution.result.languageVersionId !== original.languageVersionId || configuration.languageVersionId !== original.languageVersionId
-      || req.criteriaDigest !== configuration.criteriaDigest || req.evaluatorVersion !== configuration.evaluatorVersion || execution.result.evaluatorVersion !== configuration.evaluatorVersion
+      || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: req.criteriaDigest, evaluatorVersion: req.evaluatorVersion }, { criteriaDigest: configuration.criteriaDigest, evaluatorVersion: configuration.evaluatorVersion })
+      || !sameFields(['evaluatorVersion'] as const, { evaluatorVersion: execution.result.evaluatorVersion }, { evaluatorVersion: configuration.evaluatorVersion })
       || req.dimension !== execution.result.dimension || req.inputDigest !== execution.inputDigest || req.inputDigest !== identity.digest(evaluationInput(req))
       || !v.record(configuration.expectedConditions) || !v.same(req.expectedConditions, configuration.expectedConditions[req.dimension])
       || !completionProven(saved, { identity: executionIdentity(value => identity.digest(value), configuration, req, 'evaluation'), steps: [...evaluationSteps] })
-      || !v.same(execution.result.evidenceIds, [...req.evidence.map(e => e.evidenceId), `observation-${execution.executionId}`])) throw new Error('Canonical referenced check linkage is invalid');
+      || !sameManifest(execution.result.evidenceIds, [...req.evidence.map(e => e.evidenceId), `observation-${execution.executionId}`])) throw new Error('Canonical referenced check linkage is invalid');
     for (const evidenceId of execution.result.evidenceIds) {
       const evidence = read(snapshot, 'evaluator.evidence', evidenceId)?.evidence;
       if (!v.evidence(evidence) || evidence.evidenceId !== evidenceId) throw new Error('Canonical referenced evidence is unavailable');
@@ -330,12 +335,13 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const rules = req.expectedConditions;
     if (source.kind !== 'storage' || source.runId !== run.runId || req.executionId !== executionId || result.executionId !== executionId
       || req.taskId !== run.taskId || req.scope !== run.scope || result.scope !== req.scope
-      || req.criteriaDigest !== run.criteriaDigest || result.criteriaDigest !== req.criteriaDigest
-      || req.evaluatorVersion !== run.evaluatorVersion || result.evaluatorVersion !== req.evaluatorVersion
+      || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: req.criteriaDigest, evaluatorVersion: req.evaluatorVersion }, { criteriaDigest: run.criteriaDigest, evaluatorVersion: run.evaluatorVersion })
+      || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: result.criteriaDigest, evaluatorVersion: result.evaluatorVersion }, { criteriaDigest: req.criteriaDigest, evaluatorVersion: req.evaluatorVersion })
       || req.inputDigest !== identity.digest(storageInput(req)) || result.inputDigest !== req.inputDigest
-      || source.requestDigest !== saved.requestDigest || source.requestDigest !== identity.digest(v.serialise({ runId: run.runId, kind: 'storage', request: req }))
+      || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: saved.requestDigest })
+      || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: identity.digest(v.serialise({ runId: run.runId, kind: 'storage', request: req })) })
       || !storageConditions(rules) || !v.same(rules, expected.storage)
-      || !v.same(result.evidenceIds, [`observation-${executionId}`])
+      || !sameManifest(result.evidenceIds, [`observation-${executionId}`])
       || !completionProven(saved, { identity: executionIdentity(value => identity.digest(value), run, req, 'storage'), steps: [...evaluationSteps] })) return unavailable('Canonical storage request and result linkage is invalid');
     const evidence = read(s, 'evaluator.evidence', `observation-${executionId}`)?.evidence;
     if (!v.same(evidence, { evidenceId: `observation-${executionId}`, kind: 'synthetic-storage-observation', original: req.original, retrieved: req.retrieved })) return unavailable('Canonical storage observation is unavailable');
@@ -431,7 +437,7 @@ function evaluationRequest(x: unknown): x is EvaluationRequest {
   return v.object(x) && [x.taskId, x.executionId, x.targetMessageId, x.languageVersionId, x.scope, x.evaluatorVersion].every(v.text)
     && ['transmission', 'factuality', 'authorisation', 'task_outcome'].includes(String(x.dimension))
     && v.interpretation(x.interpretation) && conditions(x.expectedConditions) && Array.isArray(x.evidence) && x.evidence.every(v.evidence)
-    && new Set(x.evidence.map(e => e.evidenceId)).size === x.evidence.length && v.digest(x.inputDigest) && v.digest(x.criteriaDigest);
+    && uniqueManifest(x.evidence.map(e => e.evidenceId)) && v.digest(x.inputDigest) && v.digest(x.criteriaDigest);
 }
 function storageRequest(x: unknown): x is StorageCheckRequest {
   return v.object(x) && [x.taskId, x.executionId, x.scope, x.evaluatorVersion].every(v.text) && v.json(x.original) && v.json(x.retrieved)
@@ -446,5 +452,5 @@ function validRun(value: unknown): value is EvaluatorRun {
     || !v.record(value.expectedConditions)) return false;
   const expected = value.expectedConditions;
   return ['transmission', 'factuality', 'authorisation', 'task_outcome'].every(d => conditions(expected[d]))
-    && storageConditions(expected.storage) && hostIdentity.digest(expected) === value.criteriaDigest;
+    && storageConditions(expected.storage) && sameFields(['criteriaDigest'] as const, { criteriaDigest: hostIdentity.digest(expected) }, { criteriaDigest: value.criteriaDigest });
 }

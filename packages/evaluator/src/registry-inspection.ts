@@ -1,3 +1,4 @@
+import { sameFields, uniqueManifest } from '@semevolve/core';
 import type { CheckExecution, CheckId, Digest, LanguageVersionId, PeerId, Result, UtcTimestamp, Verdict } from '@semevolve/core';
 import type { EvaluatorRuntime } from './runtime.js';
 import { invalid, ok } from './records.js';
@@ -16,7 +17,7 @@ export interface ConformanceCandidate {
 export function createRegistryInspectionAdapter(options: { readonly evaluator: EvaluatorRuntime; readonly testSetDigest: Digest }) {
   return {
     async readConformance<Record extends ConformanceCandidate>(record: Record): Promise<Result<{ readonly record: Record; readonly independent: true; readonly fixedBeforeRun: true; readonly regressionVerdict: Verdict; readonly checks: readonly CheckExecution[] } | null>> {
-      if (!v.json(record) || !v.implementationFingerprint(record.fingerprint) || record.testSetDigest !== options.testSetDigest || record.checkIds.length === 0 || new Set(record.checkIds).size !== record.checkIds.length) return invalid('Conformance set mismatch');
+      if (!v.json(record) || !v.implementationFingerprint(record.fingerprint) || !sameFields(['testSetDigest'] as const, { testSetDigest: record.testSetDigest }, { testSetDigest: options.testSetDigest }) || record.checkIds.length === 0 || !uniqueManifest([...record.checkIds])) return invalid('Conformance set mismatch');
       const fixed = structuredClone(record);
       const checks: CheckExecution[] = [];
       for (const id of fixed.checkIds) {
@@ -24,8 +25,9 @@ export function createRegistryInspectionAdapter(options: { readonly evaluator: E
         if (!result.ok) return result;
         const { execution, request } = result.value;
         const snapshot = request.interpretation.inputSnapshot;
-        if (!result.value.eligible || result.value.testSetDigest !== fixed.testSetDigest || execution.result.dimension !== 'transmission' || execution.result.method !== 'deterministic_test'
-          || execution.result.languageVersionId !== fixed.versionId || execution.result.scope !== fixed.scopeId || execution.result.evaluatorVersion !== fixed.evaluatorVersion
+        if (!result.value.eligible || !sameFields(['testSetDigest', 'evaluatorVersion'] as const, { testSetDigest: result.value.testSetDigest, evaluatorVersion: execution.result.evaluatorVersion }, { testSetDigest: fixed.testSetDigest, evaluatorVersion: fixed.evaluatorVersion })
+          || execution.result.dimension !== 'transmission' || execution.result.method !== 'deterministic_test'
+          || execution.result.languageVersionId !== fixed.versionId || execution.result.scope !== fixed.scopeId
           || !v.record(snapshot) || !v.same(snapshot.fingerprint, fixed.fingerprint) || request.interpretation.receiverId !== fixed.fingerprint.peerId
           || execution.performedAt > fixed.checkedAt) return ok(null);
         checks.push(execution);
