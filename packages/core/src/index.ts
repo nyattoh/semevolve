@@ -3,6 +3,8 @@ export type * from './contracts/message.js';
 export type * from './contracts/evidence.js';
 export type * from './contracts/task-store.js';
 export { canonicalJson, digestJson, hostIdentity, isUtcTimestamp } from './identity.js';
+export { operationSteps, runOperation } from './operation.js';
+export type { OperationEvent, OperationPrepared, OperationSpec, OperationStep, OperationWrite } from './operation.js';
 export { parseEnvelope } from './envelope.js';
 export { createMemoryTaskStore } from './memory-store.js';
 export type { StoreOptions } from './store-engine.js';

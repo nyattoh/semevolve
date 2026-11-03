@@ -1,95 +1,156 @@
-import { setImmediate } from 'node:timers/promises';
-import type { CheckExecution, HostIdentity, JsonValue, Result, StoreSnapshot, TaskStore, Usage } from '@semevolve/core';
+import { runOperation } from '@semevolve/core';
+import type { CheckExecution, HostIdentity, JsonObject, JsonValue, Result, TaskStore, Usage } from '@semevolve/core';
+import type { OperationStep } from '@semevolve/core';
 import type { EvaluationRequest, StorageCheckRequest, StorageCheckResult } from './contracts/evaluation.js';
 import type { EvaluatorOptions, EvaluatorRun } from './runtime.js';
-import { ok, read, records, unavailable } from './records.js';
+import { collision, ok, read, records, unavailable } from './records.js';
 import * as v from './validation.js';
 
 export interface ExecutionProduct { readonly result: CheckExecution | StorageCheckResult; readonly evidence: JsonValue; readonly usage: Usage }
-export function executionLog(store: TaskStore, identity: HostIdentity, run: EvaluatorRun, budget: EvaluatorOptions['budget'], attempts: number, timeoutMs: number, signal: AbortSignal | undefined) {
+export interface ExecutionReservation { readonly collection: string; readonly id: string; readonly value: JsonObject }
+const pending = 'Execution is pending or unknown; no new start permitted';
+export function executionLog(store: TaskStore, identity: HostIdentity, run: EvaluatorRun, budget: EvaluatorOptions['budget'], attempts: number, timeoutMs: number, signal: AbortSignal | undefined, fault?: (step: OperationStep, name: string) => Promise<void>) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('Invalid checker timeout');
   const log = records(store, identity, run.taskId, attempts);
-  async function runCheck(request: EvaluationRequest | StorageCheckRequest, kind: 'evaluation' | 'storage', judge: (snapshot: StoreSnapshot, signal: AbortSignal) => Promise<ExecutionProduct>): Promise<Result<CheckExecution | StorageCheckResult>> {
+  async function runCheck(request: EvaluationRequest | StorageCheckRequest, kind: 'evaluation' | 'storage', reservations: readonly ExecutionReservation[], judge: (snapshot: import('@semevolve/core').StoreSnapshot, signal: AbortSignal) => Promise<ExecutionProduct>): Promise<Result<CheckExecution | StorageCheckResult>> {
     const requestDigest = identity.digest(v.serialise({ runId: run.runId, kind, request }));
     const rejection = { operation: kind === 'evaluation' ? 'evaluate' : 'evaluateStorage', runId: run.runId, executionId: request.executionId, requestDigest };
-    let binding: Parameters<NonNullable<EvaluatorOptions['budget']>['start']>[0] | undefined;
-    for (let i = 0; i < attempts; i++) {
-      const state = await store.snapshot(); if (!state.ok) return state;
-      const old = read(state.value, 'evaluator.requests', request.executionId);
-      if (old) {
-        if (old.requestDigest !== requestDigest || old.runId !== run.runId || !v.same(old.request, request)) return log.rejected({ code: 'id_collision', id: request.executionId }, rejection);
-        const saved = read(state.value, kind === 'evaluation' ? 'evaluator.executions' : 'evaluator.storage-results', request.executionId);
-        if (saved) {
-          const product: unknown = saved.result;
-          if (saved.requestDigest !== requestDigest) return unavailable('Invalid persisted execution result');
-          if (kind === 'evaluation' && v.execution(product)) return ok(structuredClone(product));
-          if (kind === 'storage' && storageResult(product)) return ok(structuredClone(product));
+    const resultCollection = kind === 'evaluation' ? 'evaluator.executions' : 'evaluator.storage-results';
+    const outcome = await runOperation<CheckExecution | StorageCheckResult>(store, identity, attempts, {
+      name: 'evaluator.execution', key: request.executionId, taskId: request.taskId, recover: 'unknown', pendingReason: pending,
+      ...(fault ? { fault } : {}),
+      intent: snapshot => read(snapshot, 'evaluator.requests', request.executionId) ?? null,
+      same: stored => stored.requestDigest === requestDigest && stored.runId === run.runId && v.same(stored.request, request),
+      proof: snapshot => {
+        const saved = read(snapshot, resultCollection, request.executionId);
+        if (!saved || saved.requestDigest !== requestDigest) return null;
+        const serialised = v.serialise(saved.result);
+        if (!v.record(serialised)) return null;
+        if (kind === 'evaluation' && !v.execution(serialised)) return null;
+        if (kind === 'storage' && !storageResult(serialised)) return null;
+        return { phase: 'saved', result: serialised };
+      },
+      async prepare() {
+        const state = await store.snapshot(); if (!state.ok) return state;
+        const writes: ExecutionReservation[] = [];
+        for (const item of reservations) {
+          const old = read(state.value, item.collection, item.id);
+          if (old && !v.same(old, item.value)) return collision(item.id);
+          if (!old) writes.push(item);
+        }
+        const claim = { schema: 1, runId: run.runId, kind, request: v.serialise(request), requestDigest, invocationId: identity.newId('invocation'), reservationId: identity.newId('reservation') };
+        return ok({ intent: claim, writes: [{ collection: 'evaluator.requests', id: request.executionId, value: claim }, ...writes], events: [{ kind: 'evaluator.start_claimed', data: { executionId: request.executionId, requestDigest } }] });
+      },
+      async effect(intent) {
+        if (!budget) return unavailable('Budget start is unavailable; claimed execution remains pending');
+        if (!v.text(intent.invocationId) || !v.text(intent.reservationId)) return unavailable('Invalid execution intent');
+        const binding = { taskId: request.taskId, executionId: request.executionId, invocationId: intent.invocationId as import('@semevolve/core').InvocationId, reservationId: intent.reservationId as import('@semevolve/core').ReservationId };
+        let reserved = false;
+        const startedAt = performance.now();
+        const controller = new AbortController();
+        const abort = () => controller.abort('cancelled');
+        signal?.addEventListener('abort', abort, { once: true });
+        if (signal?.aborted) abort();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          if (controller.signal.aborted) throw new Error('Checker cancelled before start');
+          const start = await budget.start(binding);
+          if (!start.ok) {
+            const event = await store.snapshot();
+            if (event.ok) await log.append(event.value, [], 'evaluator.start_refused', { executionId: request.executionId, error: v.serialise(start.error) });
+            return start;
+          }
+          reserved = true;
+          const current = await store.snapshot(); if (!current.ok) throw new Error(`Store snapshot failed after budget start: ${JSON.stringify(current.error)}`);
+          timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
+          let removeAbort = () => {};
+          const interrupted = new Promise<never>((_, reject) => {
+            const stop = () => reject(new Error(`Checker ${String(controller.signal.reason)}`));
+            removeAbort = () => controller.signal.removeEventListener('abort', stop);
+            controller.signal.addEventListener('abort', stop, { once: true });
+            if (controller.signal.aborted) stop();
+          });
+          let product: ExecutionProduct;
+          try {
+            if (controller.signal.aborted) throw new Error(`Checker ${String(controller.signal.reason)}`);
+            product = await Promise.race([judge(current.value, controller.signal), interrupted]);
+          }
+          finally { removeAbort(); }
+          const settled = await runOperation(store, identity, attempts, {
+            name: 'evaluator.settle', key: request.executionId, taskId: request.taskId, recover: 'unknown', pendingReason: pending,
+            ...(fault ? { fault } : {}),
+            intent: snapshot => read(snapshot, 'evaluator.settle-intents', request.executionId) ?? null,
+            same: stored => stored.reservationId === binding.reservationId && stored.kind === 'completed',
+            proof: snapshot => read(snapshot, 'evaluator.settle-proofs', request.executionId) ?? null,
+            async prepare() {
+              const row = { schema: 1, reservationId: binding.reservationId, kind: 'completed', usage: v.serialise(product.usage) };
+              return ok({ intent: row, writes: [{ collection: 'evaluator.settle-intents', id: request.executionId, value: row }], events: [{ kind: 'evaluator.settle_claimed', data: { executionId: request.executionId, reservationId: binding.reservationId } }] });
+            },
+            async effect() {
+              const completed = await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'completed', usage: product.usage } });
+              if (!completed.ok) return completed;
+              return ok({ schema: 1, reservationId: binding.reservationId, settled: true });
+            },
+            async finish() {
+              const row = { schema: 1, reservationId: binding.reservationId, settled: true };
+              for (let i = 0; i < attempts; i++) {
+                const s = await store.snapshot(); if (!s.ok) return s;
+                const old = read(s.value, 'evaluator.settle-proofs', request.executionId);
+                if (old) return v.same(old, row) ? ok(row) : collision(request.executionId);
+                const written = await log.append(s.value, [{ collection: 'evaluator.settle-proofs', id: request.executionId, value: row }], 'evaluator.settled', { executionId: request.executionId, reservationId: binding.reservationId });
+                if (written.ok) return ok(row);
+                if (written.error.code !== 'revision_conflict') return written;
+              }
+              return unavailable('Settlement proof has no progress');
+            },
+          });
+          if (!settled.ok) throw new Error('Settlement is unknown; execution result not promoted');
+          const evidence = v.serialise(product.evidence);
+          const result = v.serialise(product.result);
+          if (!v.record(evidence) || !v.record(result)) return unavailable('Unexpected execution product');
+          return ok({ phase: 'product', result, evidence, usage: v.serialise(product.usage) });
+        } catch (error) {
+          if (reserved) {
+            const usage: Usage = { inputTokens: null, outputTokens: null, reasoningTokens: null, costYen: null, elapsedMs: performance.now() - startedAt, source: 'unavailable' };
+            await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'unknown_outcome', usage, reason: 'Checker or host failed after start' } }).catch(() => undefined);
+          }
+          const s = await store.snapshot();
+          if (s.ok) await log.append(s.value, [], 'evaluator.unknown_outcome', { executionId: request.executionId, reason: error instanceof Error ? error.message : 'Host error' });
+          return unavailable(`Execution outcome unknown: ${error instanceof Error ? error.message : 'host error'}`);
+        } finally { if (timer !== undefined) clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+      },
+      async finish(_intent, payload) {
+        if (payload.phase === 'saved') {
+          if (kind === 'evaluation' && v.execution(payload.result)) return ok(structuredClone(payload.result));
+          if (kind === 'storage' && storageResult(payload.result)) return ok(structuredClone(payload.result));
           return unavailable('Invalid persisted execution product');
         }
-        await setImmediate();
-        continue;
-      }
-      binding = { taskId: request.taskId, executionId: request.executionId, invocationId: identity.newId('invocation'), reservationId: identity.newId('reservation') };
-      const claim = { schema: 1, runId: run.runId, kind, request: v.serialise(request), requestDigest, invocationId: binding.invocationId, reservationId: binding.reservationId };
-      const started = await log.append(state.value, [{ collection: 'evaluator.requests', id: request.executionId, value: claim }], 'evaluator.start_claimed', { executionId: request.executionId, requestDigest });
-      if (started.ok) break;
-      binding = undefined;
-      if (started.error.code !== 'revision_conflict') return started;
-    }
-    if (!binding) return log.rejected({ code: 'unavailable', reason: 'Execution is pending or unknown; no new start permitted' }, rejection);
-    if (!budget) return unavailable('Budget start is unavailable; claimed execution remains pending');
-    let reserved = false;
-    const startedAt = performance.now();
-    const controller = new AbortController();
-    const abort = () => controller.abort('cancelled');
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      if (controller.signal.aborted) throw new Error('Checker cancelled before start');
-      const start = await budget.start(binding);
-      if (!start.ok) {
-        const event = await store.snapshot();
-        if (event.ok) await log.append(event.value, [], 'evaluator.start_refused', { executionId: request.executionId, error: v.serialise(start.error) });
-        return start;
-      }
-      reserved = true;
-      const current = await store.snapshot(); if (!current.ok) throw new Error(`Store snapshot failed after budget start: ${JSON.stringify(current.error)}`);
-      timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
-      let removeAbort = () => {};
-      const interrupted = new Promise<never>((_, reject) => {
-        const stop = () => reject(new Error(`Checker ${String(controller.signal.reason)}`));
-        removeAbort = () => controller.signal.removeEventListener('abort', stop);
-        controller.signal.addEventListener('abort', stop, { once: true });
-        if (controller.signal.aborted) stop();
-      });
-      let product: ExecutionProduct;
-      try {
-        if (controller.signal.aborted) throw new Error(`Checker ${String(controller.signal.reason)}`);
-        product = await Promise.race([judge(current.value, controller.signal), interrupted]);
-      }
-      finally { removeAbort(); }
-      const settled = await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'completed', usage: product.usage } });
-      if (!settled.ok) throw new Error('Settlement is unknown; execution result not promoted');
-      for (let i = 0; i < attempts; i++) {
-        const s = await store.snapshot(); if (!s.ok) return s;
-        const result = await log.append(s.value, [
-          { collection: kind === 'evaluation' ? 'evaluator.executions' : 'evaluator.storage-results', id: request.executionId, value: { schema: 1, requestDigest, result: v.serialise(product.result), usage: v.serialise(product.usage) } },
-          { collection: 'evaluator.evidence', id: `observation-${request.executionId}`, value: { schema: 1, evidence: product.evidence } },
-        ], 'evaluator.completed', { executionId: request.executionId, reservationId: binding.reservationId });
-        if (result.ok) return ok(structuredClone(product.result));
-        if (result.error.code !== 'revision_conflict') return result;
-      }
-      return unavailable('Result commit has no progress; retain settled reservation and pending claim');
-    } catch (error) {
-      if (reserved) {
-        const usage: Usage = { inputTokens: null, outputTokens: null, reasoningTokens: null, costYen: null, elapsedMs: performance.now() - startedAt, source: 'unavailable' };
-        await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'unknown_outcome', usage, reason: 'Checker or host failed after start' } }).catch(() => undefined);
-      }
-      const s = await store.snapshot();
-      if (s.ok) await log.append(s.value, [], 'evaluator.unknown_outcome', { executionId: request.executionId, reason: error instanceof Error ? error.message : 'Host error' });
-      return unavailable(`Execution outcome unknown: ${error instanceof Error ? error.message : 'host error'}`);
-    } finally { if (timer !== undefined) clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+        if (payload.phase !== 'product' || !v.record(payload.result) || !v.record(payload.evidence) || !v.record(payload.usage)) return unavailable('Unexpected execution product');
+        for (let i = 0; i < attempts; i++) {
+          const s = await store.snapshot(); if (!s.ok) return s;
+          const saved = read(s.value, resultCollection, request.executionId);
+          if (saved) {
+            if (saved.requestDigest !== requestDigest) return unavailable('Invalid persisted execution result');
+            if (kind === 'evaluation' && v.execution(saved.result)) return ok(structuredClone(saved.result));
+            if (kind === 'storage' && storageResult(saved.result)) return ok(structuredClone(saved.result));
+            return unavailable('Invalid persisted execution product');
+          }
+          const written = await log.append(s.value, [
+            { collection: resultCollection, id: request.executionId, value: { schema: 1, requestDigest, result: payload.result, usage: payload.usage } },
+            { collection: 'evaluator.evidence', id: `observation-${request.executionId}`, value: { schema: 1, evidence: payload.evidence } },
+          ], 'evaluator.completed', { executionId: request.executionId, reservationId: v.text(_intent.reservationId) ? _intent.reservationId : null });
+          if (written.ok) {
+            if (kind === 'evaluation' && v.execution(payload.result)) return ok(structuredClone(payload.result));
+            if (kind === 'storage' && storageResult(payload.result)) return ok(structuredClone(payload.result));
+            return unavailable('Unexpected execution product');
+          }
+          if (written.error.code !== 'revision_conflict') return written;
+        }
+        return unavailable('Result commit has no progress; retain settled reservation and pending claim');
+      },
+    });
+    if (!outcome.ok && (outcome.error.code === 'id_collision' || (outcome.error.code === 'unavailable' && outcome.error.reason === pending))) return log.rejected(outcome.error, rejection);
+    return outcome;
   }
   return { runCheck };
 }

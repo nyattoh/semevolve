@@ -102,12 +102,14 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
   async function inspect(input: TomboInspectionInput): Promise<unknown> {
     if (input.taskId !== taskId) throw new Error('Task mismatch');
     const status = await command(['status'], true);
-    if (status !== null) throw new Error('Inspect cannot reset an existing session');
+    if (v.management(status) && status.state.taskId === input.taskId && status.session.binding.taskId === input.taskId) return status;
     const packet = { ...packetBase, evidence: mapEvidence(input.evidence, metadata, readerId), proposedAnswer: JSON.stringify({ transmissionContract: input.transmissionContract, interpretation: input.interpretation, proposedAction: input.proposedAction, contextRevision: input.contextRevision,
       unresolvedSources: input.evidence.filter(e => e.content.kind !== 'retrieved').map(e => ({ evidenceId: e.evidenceId, source: e.source, content: e.content })) }) };
     const taskPath = await saved('task', packet);
-    const clockPath = await saved('task-clock', clock);
-    await command(['activate', '--input', taskPath, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json', '--task-clock', clockPath]);
+    if (status === null) {
+      const clockPath = await saved('task-clock', clock);
+      await command(['activate', '--input', taskPath, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json', '--task-clock', clockPath]);
+    }
     const context = await command(['prepare', '--input', taskPath, '--ledger', '.session/sdk.jsonl']);
     if (!v.record(context) || !v.record(context.binding)) throw new Error('Preparation is blocked');
     const proposal = options.propose('inspect', structuredClone(context));

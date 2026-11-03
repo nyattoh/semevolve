@@ -47,6 +47,24 @@ test('a caller evidence id in the observation namespace does not stick the execu
   assert.equal(retried.result.verdict, 'pass');
 });
 
+test('a changed execution does not reserve a fresh evidence id before the collision', async () => {
+  const f = fixture();
+  const held = { evidenceId: 'public-source', source: 'public-fixture', scope: f.run.scope, allowedReaders: ['evaluator'], content: { kind: 'reference_only' } };
+  const req = await request(f, 'transmission', { certainty: 'candidate' }, [held]);
+  value(await f.runtime.evaluate(req));
+  const fresh = { ...held, evidenceId: 'fresh-source' };
+  const inputOf = evidence => identity.digest({ taskId: req.taskId, targetMessageId: req.targetMessageId, languageVersionId: req.languageVersionId, dimension: req.dimension, interpretation: req.interpretation, evidence, scope: req.scope });
+  const changed = { ...structuredClone(req), evidence: [fresh], inputDigest: inputOf([fresh]) };
+  const rejected = await f.runtime.evaluate(changed);
+  assert.equal(rejected.ok, false, JSON.stringify(rejected));
+  assert.deepEqual(rejected.error, { code: 'id_collision', id: req.executionId });
+  assert.equal(value(await f.store.snapshot()).entries.some(entry => entry.key.collection === 'evaluator.evidence' && entry.key.id === 'fresh-source'), false);
+  const legit = { ...structuredClone(changed), executionId: identity.newId('execution') };
+  const done = value(await f.runtime.evaluate(legit));
+  assert.equal(done.executionId, legit.executionId);
+  assert.equal(done.result.verdict, 'pass');
+});
+
 test('failed completion settlement closes the reservation as an unknown outcome', async () => {
   const host = await policyHost({ maxInvocations: 1 });
   const budget = {

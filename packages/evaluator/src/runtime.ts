@@ -1,5 +1,6 @@
-import { hostIdentity, isUtcTimestamp } from '@semevolve/core';
-import type { CheckExecution, CheckId, ExecutionId, HostIdentity, Interpretation, InvocationId, JsonValue, LanguageVersionId, MessageId, PeerId, ReservationId, Result, StoreSnapshot, TaskId, TaskStore, Usage } from '@semevolve/core';
+import { hostIdentity, isUtcTimestamp, runOperation } from '@semevolve/core';
+import type { CheckExecution, CheckId, ExecutionId, HostIdentity, Interpretation, InvocationId, JsonObject, JsonValue, LanguageVersionId, MessageId, PeerId, ReservationId, Result, StoreSnapshot, TaskId, TaskStore, Usage } from '@semevolve/core';
+import type { OperationSpec, OperationStep } from '@semevolve/core';
 import type { EvaluationPort, EvaluationRequest, EvidenceWithdrawal, StorageCheckRequest, StorageCheckResult } from './contracts/evaluation.js';
 import { collision, invalid, ok, read, records, unavailable } from './records.js';
 import * as v from './validation.js';
@@ -45,6 +46,7 @@ export interface EvaluatorOptions {
     start(input: { readonly taskId: TaskId; readonly executionId: ExecutionId; readonly invocationId: InvocationId; readonly reservationId: ReservationId }): Promise<Result<{ readonly started: true }>>;
     settle(input: { readonly reservationId: ReservationId; readonly outcome: { readonly kind: 'completed'; readonly usage: Usage } | { readonly kind: 'unknown_outcome'; readonly usage: Usage; readonly reason: string } }): Promise<Result<void>>;
   };
+  readonly fault?: (step: OperationStep, name: string) => Promise<void>;
 }
 export interface EvaluatorRuntime extends EvaluationPort {
   captureInput(input: CaptureInput): Promise<Result<JsonValue>>;
@@ -85,7 +87,10 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     || !Number.isSafeInteger(attempts) || attempts < 1 || attempts > 64) throw new Error('Invalid evaluator configuration');
   const expected = configuredConditions;
   const log = records(options.store, identity, run.taskId, attempts);
-  const executions = executionLog(options.store, identity, run, options.budget, attempts, options.checkerTimeoutMs ?? 30000, options.signal);
+  const executions = executionLog(options.store, identity, run, options.budget, attempts, options.checkerTimeoutMs ?? 30000, options.signal, options.fault);
+  function hooked<T>(spec: OperationSpec<T>): OperationSpec<T> {
+    return options.fault ? { ...spec, fault: options.fault } : spec;
+  }
   const key = (messageId: string, receiverId: string) => identity.digest([run.runId, messageId, receiverId]);
   async function ready(): Promise<Result<void>> {
     const result = await log.insert('evaluator.runs', run.runId, { schema: 1, configuration: v.serialise(run) }, 'evaluator.run_fixed');
@@ -126,13 +131,18 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || request.targetMessageId !== request.interpretation.messageId
       || !v.same(request.interpretation, disclosed.projection)) return reject('Independent committed interpretation mismatch', v.serialise(request));
     if (request.evidence.some(ref => ref.evidenceId.startsWith('observation-'))) return reject('Observation evidence id is reserved', v.serialise(request));
+    const requestDigest = identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request }));
+    const reserved = await options.store.snapshot(); if (!reserved.ok) return reserved;
+    const claimed = read(reserved.value, 'evaluator.requests', request.executionId);
+    if (claimed && (claimed.requestDigest !== requestDigest || !v.same(claimed.request, request))) return log.rejected({ code: 'id_collision', id: request.executionId }, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, requestDigest });
+    const evidence: { collection: string; id: string; value: JsonObject }[] = [];
     for (const ref of request.evidence) {
-      const written = await log.insert('evaluator.evidence', ref.evidenceId, { schema: 1, evidence: v.serialise(ref) }, 'evaluator.evidence_registered');
-      if (!written.ok) return written.error.code === 'id_collision'
-        ? log.rejected(written.error, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, evidenceId: ref.evidenceId,
-          requestDigest: identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request })) }) : written;
+      const value = { schema: 1, evidence: v.serialise(ref) };
+      const old = read(reserved.value, 'evaluator.evidence', ref.evidenceId);
+      if (old && !v.same(old, value)) return log.rejected({ code: 'id_collision', id: ref.evidenceId }, { operation: 'evaluate', runId: run.runId, executionId: request.executionId, evidenceId: ref.evidenceId, requestDigest });
+      if (!old) evidence.push({ collection: 'evaluator.evidence', id: ref.evidenceId, value });
     }
-    const result = await executions.runCheck(request, 'evaluation', async (snapshot, signal) => {
+    const result = await executions.runCheck(request, 'evaluation', evidence, async (snapshot, signal) => {
       const started = performance.now();
       let judgement: { verdict: 'pass' | 'fail' | 'inconclusive'; limitation: string | null };
       let observation: JsonValue = request.interpretation.answer;
@@ -168,7 +178,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     if (!storageConditions(rules)) return invalid('Invalid storage conditions');
     if (request.scope !== run.scope || !v.same(request.expectedConditions, rules)
       || request.inputDigest !== identity.digest(storageInput(request))) return reject('Storage conditions or input digest mismatch', v.serialise(request));
-    const result = await executions.runCheck(request, 'storage', async () => {
+    const result = await executions.runCheck(request, 'storage', [], async () => {
       const started = performance.now();
       const judgement = rules.kind === 'storage-projection-v1' ? judgeProjection(request, rules) : {
         literalRestoration: v.same(request.original, request.retrieved) ? 'pass' as const : 'fail' as const,
@@ -184,23 +194,41 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
   }
   async function withdraw(request: EvidenceWithdrawal): Promise<Result<void>> {
     if (!v.text(request.evidenceId) || !v.text(request.reason) || !isUtcTimestamp(request.withdrawnAt)) return invalid('Invalid evidence withdrawal');
-    const s = await options.store.snapshot(); if (!s.ok) return s;
-    if (!read(s.value, 'evaluator.evidence', request.evidenceId)) return invalid('Evidence is not registered');
     const id = identity.digest(v.serialise(request));
-    const saved = await log.insert('evaluator.withdrawals', id, { schema: 1, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt }, 'evaluator.evidence_withdrawn');
-    if (!saved.ok) return saved;
-    const current = await options.store.snapshot(); if (!current.ok) return current;
-    if (read(current.value, 'evaluator.withdrawal-reconciliation', identity.digest([id, true]))) return ok(undefined);
-    const done = options.invalidateEvidence ? await options.invalidateEvidence(request) : unavailable('TOMBO invalidation not connected');
-    const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: done.ok, reason: done.ok ? null : v.serialise(done.error) };
-    if (!done.ok) {
-      const observed = await options.store.snapshot(); if (!observed.ok) return observed;
-      const legacy = read(observed.value, 'evaluator.withdrawal-reconciliation', identity.digest([id, false]));
-      if (legacy && v.same(legacy, observation)) return ok(undefined);
-    }
-    const observationId = identity.digest(done.ok ? [id, true] : [id, false, observation.reason]);
-    const recorded = await log.insert('evaluator.withdrawal-reconciliation', observationId, observation, 'evaluator.withdrawal_reconciled');
-    return recorded.ok ? ok(undefined) : recorded;
+    const intent = { schema: 1, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt };
+    const succeeded = (snapshot: StoreSnapshot) => read(snapshot, 'evaluator.withdrawal-reconciliation', identity.digest([id, true]));
+    return runOperation(options.store, identity, attempts, hooked({
+      name: 'evaluator.invalidate', key: id, taskId: run.taskId, recover: 'rerun', pendingReason: 'Evidence invalidation already in flight',
+      intent: snapshot => read(snapshot, 'evaluator.withdrawals', id) ?? null,
+      same: stored => v.same(stored, intent),
+      proof: snapshot => succeeded(snapshot) ?? null,
+      async prepare() {
+        const s = await options.store.snapshot(); if (!s.ok) return s;
+        if (!read(s.value, 'evaluator.evidence', request.evidenceId)) return invalid('Evidence is not registered');
+        return ok({ intent, writes: [{ collection: 'evaluator.withdrawals', id, value: intent }], events: [{ kind: 'evaluator.evidence_withdrawn', data: { id } }] });
+      },
+      async effect() {
+        const current = await options.store.snapshot(); if (!current.ok) return current;
+        if (succeeded(current.value)) return ok({ schema: 1, applied: true, reason: null });
+        const done = options.invalidateEvidence ? await options.invalidateEvidence(request) : unavailable('TOMBO invalidation not connected');
+        return ok({ schema: 1, applied: done.ok, reason: done.ok ? null : v.serialise(done.error) });
+      },
+      async finish(_intent, payload) {
+        const current = await options.store.snapshot(); if (!current.ok) return current;
+        if (succeeded(current.value)) return ok(undefined);
+        if (payload.applied === true && payload.reason === null) {
+          const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: true, reason: null };
+          const recorded = await log.insert('evaluator.withdrawal-reconciliation', identity.digest([id, true]), observation, 'evaluator.withdrawal_reconciled');
+          return recorded.ok ? ok(undefined) : recorded;
+        }
+        if (payload.reason === undefined) return unavailable('Invalid invalidation observation');
+        const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: false, reason: payload.reason };
+        const legacy = read(current.value, 'evaluator.withdrawal-reconciliation', identity.digest([id, false]));
+        if (legacy && v.same(legacy, observation)) return ok(undefined);
+        const recorded = await log.insert('evaluator.withdrawal-reconciliation', identity.digest([id, false, observation.reason]), observation, 'evaluator.withdrawal_reconciled');
+        return recorded.ok ? ok(undefined) : recorded;
+      },
+    }));
   }
   async function readCheckEligibility(checkId: CheckId): Promise<Result<CheckEligibility>> {
     const s = await options.store.snapshot(); if (!s.ok) return s;

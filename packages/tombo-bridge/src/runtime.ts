@@ -1,5 +1,6 @@
-import { hostIdentity } from '@semevolve/core';
+import { hostIdentity, runOperation } from '@semevolve/core';
 import type { HostIdentity, JsonObject, Result, StoreSnapshot, TaskId, TaskStore } from '@semevolve/core';
+import type { OperationSpec, OperationStep } from '@semevolve/core';
 import type { PendingTomboUpdate, TomboInspectionInput, TomboInspectionSummary, TomboPort, TomboReconciliation } from './contracts/tombo.js';
 import * as v from './validation.js';
 
@@ -15,6 +16,7 @@ export interface TomboBridgeOptions {
   readonly sdkCommit: '585a1c711d55fdcc4b380343ceba2b3534165d5b';
   readonly identity?: HostIdentity;
   readonly maxAttempts?: number;
+  readonly fault?: (step: OperationStep, name: string) => Promise<void>;
   readonly boundary?: (point: 'pending_committed' | 'sdk_updated' | 'result_committed', update: PendingTomboUpdate) => Promise<void>;
 }
 export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
@@ -40,6 +42,9 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     }
     return unavailable('No progress committing bridge record');
   }
+  function hooked<T>(spec: OperationSpec<T>): OperationSpec<T> {
+    return options.fault ? { ...spec, fault: options.fault } : spec;
+  }
   function summary(result: v.Management): TomboInspectionSummary {
     return { reference: { sessionRef: result.session.binding.sessionId as import('@semevolve/core').SessionRef, revision: result.state.revision },
       unresolvedGapRefs: result.state.gaps.filter(g => g.status !== 'resolved').map(g => g.id), reflectionRequired: result.state.task.reflectionRequired === true,
@@ -48,49 +53,67 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
   async function inspect(input: TomboInspectionInput): Promise<Result<TomboInspectionSummary>> {
     if (!v.inspection(input)) return invalid('Invalid TOMBO inspection input');
     const inputDigest = identity.digest(v.serialise(input));
-    const claim = await insert(input.taskId, 'tombo.inspect-claims', input.taskId, { schema: 1, input: v.serialise(input), inputDigest, sdkCommit: options.sdkCommit });
-    if (!claim.ok) return claim;
-    const s = await options.store.snapshot(); if (!s.ok) return s;
-    const old = read(s.value, 'tombo.bindings', input.taskId);
-    if (old) return v.summary(old.summary) && old.inputDigest === inputDigest ? ok(structuredClone(old.summary)) : unavailable('Invalid TOMBO binding');
-    const claims = flight(options.store);
-    const activation = `inspect:${input.taskId}`;
-    let actual: unknown;
-    if (!claim.value) {
-      actual = await options.session.status(input.taskId);
-      if (actual === null) {
-        if (claims.has(activation)) return unavailable('Inspect already in flight');
-      } else if (!v.management(actual)) return unavailable('SDK inspection state or session unavailable');
-    }
-    if (claim.value || actual === null) {
-      if (claims.has(activation)) return unavailable('Inspect already in flight');
-      claims.add(activation);
-      try { actual = await options.session.inspect(input); }
-      finally { claims.delete(activation); }
-    }
-    if (!v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
-    const result = summary(actual);
-    const saved = await insert(input.taskId, 'tombo.bindings', input.taskId, { schema: 1, sdkCommit: options.sdkCommit, inputDigest, sessionRef: result.reference.sessionRef, summary: v.serialise(result) });
-    if (saved.ok) return ok(result);
-    if (saved.error.code !== 'id_collision') return saved;
-    const latest = await options.store.snapshot(); if (!latest.ok) return latest;
-    const prior = read(latest.value, 'tombo.bindings', input.taskId);
-    if (!prior || !v.summary(prior.summary) || prior.inputDigest !== inputDigest || prior.sdkCommit !== options.sdkCommit) return saved;
-    return ok(structuredClone(prior.summary));
+    const claim = { schema: 1, input: v.serialise(input), inputDigest, sdkCommit: options.sdkCommit };
+    return runOperation(options.store, identity, attempts, hooked({
+      name: 'tombo.inspect', key: input.taskId, taskId: input.taskId, recover: 'rerun', pendingReason: 'Inspect already in flight',
+      intent: s => read(s, 'tombo.inspect-claims', input.taskId) ?? null,
+      same: stored => stored.inputDigest === inputDigest && stored.sdkCommit === options.sdkCommit && v.same(stored.input, claim.input),
+      proof: s => {
+        const row = read(s, 'tombo.inspect-proofs', input.taskId);
+        return row && row.inputDigest === inputDigest && row.sdkCommit === options.sdkCommit && v.management(row.actual) ? row : null;
+      },
+      prepare: async () => ok({ intent: claim, writes: [{ collection: 'tombo.inspect-claims', id: input.taskId, value: claim }], events: [{ kind: 'tombo.inspect-claims', data: { id: input.taskId } }] }),
+      awaitEffect: async () => { await options.session.status(input.taskId); },
+      async effect(_intent, recovery) {
+        if (recovery) {
+          try { await options.session.status(input.taskId); }
+          catch (error) { return unavailable(error instanceof Error ? error.message : 'SDK inspection state or session unavailable'); }
+        }
+        let actual: unknown;
+        try { actual = await options.session.inspect(input); }
+        catch (error) { return unavailable(error instanceof Error ? error.message : 'SDK inspection state or session unavailable'); }
+        if (!v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
+        return ok({ schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(actual) });
+      },
+      async finish(_intent, proof) {
+        if (!v.management(proof.actual) || proof.inputDigest !== inputDigest || proof.sdkCommit !== options.sdkCommit) return unavailable('SDK inspection state or session unavailable');
+        const recorded = await insert(input.taskId, 'tombo.inspect-proofs', input.taskId, { schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(proof.actual) });
+        if (!recorded.ok) return recorded;
+        const current = await options.store.snapshot(); if (!current.ok) return current;
+        const existing = read(current.value, 'tombo.bindings', input.taskId);
+        if (existing) return v.summary(existing.summary) && existing.inputDigest === inputDigest && existing.sdkCommit === options.sdkCommit ? ok(structuredClone(existing.summary)) : unavailable('Invalid TOMBO binding');
+        const result = summary(proof.actual);
+        const saved = await insert(input.taskId, 'tombo.bindings', input.taskId, { schema: 1, sdkCommit: options.sdkCommit, inputDigest, sessionRef: result.reference.sessionRef, summary: v.serialise(result) });
+        if (saved.ok) return ok(result);
+        if (saved.error.code !== 'id_collision') return saved;
+        const latest = await options.store.snapshot(); if (!latest.ok) return latest;
+        const prior = read(latest.value, 'tombo.bindings', input.taskId);
+        if (!prior || !v.summary(prior.summary) || prior.inputDigest !== inputDigest || prior.sdkCommit !== options.sdkCommit) return saved;
+        return ok(structuredClone(prior.summary));
+      },
+    }));
   }
-  async function pending(update: PendingTomboUpdate): Promise<Result<JsonObject>> {
-    const s = await options.store.snapshot(); if (!s.ok) return s;
-    const binding = read(s.value, 'tombo.bindings', update.taskId);
-    if (!binding || binding.sessionRef !== update.expected.sessionRef || binding.sdkCommit !== options.sdkCommit) return invalid('Task session binding mismatch');
+  async function ensurePending(update: PendingTomboUpdate): Promise<Result<JsonObject>> {
     const value = { schema: 1, update: v.serialise(update), payloadHash: identity.digest(update.payload), updateDigest: identity.digest(v.serialise(update)), sdkCommit: options.sdkCommit };
-    const old = read(s.value, 'tombo.pending', update.executionId);
-    if (old) return v.same(old, value) ? ok(old) : collision(update.executionId);
-    const actual = await options.session.status(update.taskId);
-    if (!v.management(actual) || actual.session.binding.sessionId !== update.expected.sessionRef || actual.state.taskId !== update.taskId || actual.state.revision !== update.expected.revision) return invalid('SDK expected revision or session mismatch');
-    const saved = await insert(update.taskId, 'tombo.pending', update.executionId, value);
-    if (!saved.ok) return saved;
-    if (saved.value) await options.boundary?.('pending_committed', update);
-    return ok(value);
+    return runOperation(options.store, identity, attempts, hooked({
+      name: 'tombo.pending', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Pending update already in flight',
+      intent: s => read(s, 'tombo.pending', update.executionId) ?? null,
+      same: stored => v.same(stored, value),
+      proof: s => { const row = read(s, 'tombo.pending', update.executionId); return row && v.same(row, value) ? row : null; },
+      async prepare() {
+        const s = await options.store.snapshot(); if (!s.ok) return s;
+        const binding = read(s.value, 'tombo.bindings', update.taskId);
+        if (!binding || binding.sessionRef !== update.expected.sessionRef || binding.sdkCommit !== options.sdkCommit) return invalid('Task session binding mismatch');
+        const actual = await options.session.status(update.taskId);
+        if (!v.management(actual) || actual.session.binding.sessionId !== update.expected.sessionRef || actual.state.taskId !== update.taskId || actual.state.revision !== update.expected.revision) return invalid('SDK expected revision or session mismatch');
+        return ok({ intent: value, writes: [{ collection: 'tombo.pending', id: update.executionId, value }], events: [{ kind: 'tombo.pending', data: { id: update.executionId } }] });
+      },
+      async effect(_intent, recovery) {
+        if (!recovery) await options.boundary?.('pending_committed', update);
+        return ok(value);
+      },
+      async finish(_intent, proof) { return ok(proof); },
+    }));
   }
   function receiptProof(actual: v.Management, update: PendingTomboUpdate): string | null {
     if (actual.session.binding.sessionId !== update.expected.sessionRef || actual.session.binding.taskId !== update.taskId || actual.state.taskId !== update.taskId) return 'SDK session or task differs';
@@ -103,78 +126,92 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     if (receipt.status === 'discarded_unassessed') return 'SDK discarded this observation without assessment';
     return null;
   }
+  async function deliver(update: PendingTomboUpdate): Promise<Result<v.Management>> {
+    const saved = await ensurePending(update); if (!saved.ok) return saved;
+    return runOperation(options.store, identity, attempts, hooked({
+      name: 'tombo.receive', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Receive already in flight',
+      intent: s => read(s, 'tombo.pending', update.executionId) ?? null,
+      same: stored => v.same(stored, saved.value),
+      proof: () => null,
+      prepare: async () => unavailable('Receive intent is the saved pending update'),
+      async effect() {
+        let actual = await options.session.status(update.taskId);
+        if (!v.management(actual)) return unavailable('SDK status unavailable');
+        if (!actual.session.updates.some(r => r.id === update.executionId)) actual = await options.session.receive(update);
+        if (!v.management(actual)) return unavailable('SDK receive result unavailable');
+        const reason = receiptProof(actual, update);
+        if (reason) return unavailable(reason);
+        const body = v.serialise(actual);
+        return v.record(body) ? ok(body) : unavailable('SDK receive result unavailable');
+      },
+      async finish(_intent, proof) { return v.management(proof) ? ok(proof) : unavailable('SDK receive result unavailable'); },
+    }));
+  }
   async function receive(update: PendingTomboUpdate): Promise<Result<{ readonly executionId: PendingTomboUpdate['executionId'] }>> {
     if (!v.update(update)) return invalid('Invalid update or input digest');
-    const saved = await pending(update); if (!saved.ok) return saved;
-    let actual = await options.session.status(update.taskId);
-    if (!v.management(actual)) return unavailable('SDK status unavailable');
-    if (!actual.session.updates.some(r => r.id === update.executionId)) actual = await options.session.receive(update);
-    if (!v.management(actual)) return unavailable('SDK receive result unavailable');
-    const reason = receiptProof(actual, update);
-    return reason ? unavailable(reason) : ok({ executionId: update.executionId });
+    const delivered = await deliver(update);
+    return delivered.ok ? ok({ executionId: update.executionId }) : delivered;
   }
   async function reconcile(update: PendingTomboUpdate): Promise<Result<TomboReconciliation>> {
     if (!v.update(update)) return invalid('Invalid reconciliation input');
-    const saved = await pending(update); if (!saved.ok) return saved;
-    const s = await options.store.snapshot(); if (!s.ok) return s;
-    const old = read(s.value, 'tombo.reconciliation-results', update.executionId);
-    if (old) {
-      if (!v.summary(old.summary) || old.updateDigest !== identity.digest(v.serialise(update))) return unavailable('Invalid saved reconciliation');
-      return ok({ kind: 'reconciled', executionId: update.executionId, summary: structuredClone(old.summary) });
-    }
+    const saved = await ensurePending(update); if (!saved.ok) return saved;
+    const updateDigest = identity.digest(v.serialise(update));
+    const claim = { schema: 1, updateDigest };
     const unresolved = async (reason: string): Promise<Result<TomboReconciliation>> => {
-      const r = await insert(update.taskId, 'tombo.reconciliation-events', identity.digest([update.executionId, reason]), { schema: 1, executionId: update.executionId, reason, updateDigest: identity.digest(v.serialise(update)) });
+      const r = await insert(update.taskId, 'tombo.reconciliation-events', identity.digest([update.executionId, reason]), { schema: 1, executionId: update.executionId, reason, updateDigest });
       return r.ok ? ok({ kind: 'pending', update: structuredClone(update), reason }) : r;
     };
-    try {
-      let actual = await options.session.status(update.taskId);
-      if (!v.management(actual)) return unresolved('SDK state unavailable');
-      if (!actual.session.updates.some(r => r.id === update.executionId)) actual = await options.session.receive(update);
-      if (!v.management(actual)) return unresolved('SDK receipt state unavailable');
-      const before = receiptProof(actual, update); if (before) return unresolved(before);
-      const applied = actual.state.appliedExecutions.some(e => e.executionId === update.executionId);
-      if (!applied) {
-        const claims = flight(options.store);
-        const application = `apply:${update.executionId}`;
-        if (claims.has(application)) return unresolved('Application already in flight');
-        claims.add(application);
+    const result = await runOperation<TomboReconciliation>(options.store, identity, attempts, hooked({
+      name: 'tombo.apply', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Application already in flight',
+      intent: s => read(s, 'tombo.apply-claims', update.executionId) ?? null,
+      same: stored => stored.updateDigest === updateDigest,
+      proof: s => {
+        const row = read(s, 'tombo.reconciliation-results', update.executionId);
+        return row && v.summary(row.summary) && row.updateDigest === updateDigest ? row : null;
+      },
+      prepare: async () => ok({ intent: claim, writes: [{ collection: 'tombo.apply-claims', id: update.executionId, value: claim }], events: [{ kind: 'tombo.apply-claims', data: { id: update.executionId } }] }),
+      async effect() {
         try {
-          const claim = await insert(update.taskId, 'tombo.apply-claims', update.executionId, { schema: 1, updateDigest: identity.digest(v.serialise(update)) });
-          if (!claim.ok) return claim;
-          actual = await options.session.apply(update);
-          await options.boundary?.('sdk_updated', update);
-        } finally { claims.delete(application); }
-      }
-      if (!v.management(actual)) return unresolved('SDK update result unavailable');
-      const after = receiptProof(actual, update); if (after) return unresolved(after);
-      const observation = update.payload.observations[0];
-      const execution = actual.state.appliedExecutions.find(e => e.executionId === update.executionId);
-      const receipt = actual.session.updates.find(r => r.id === update.executionId);
-      if (!observation || !execution || execution.payloadHash !== identity.digest(observation)) return unresolved('Applied execution missing or payload hash differs');
-      if (actual.state.pendingAssessmentExecutionIds?.includes(update.executionId) || actual.session.pendingUpdates.some(r => r.id === update.executionId)
-        || receipt?.status !== 'applied' || !v.integer(receipt.appliedRevision) || receipt.appliedRevision > actual.state.revision || receipt.appliedRevision < update.expected.revision) return unresolved('Execution or receipt assessment remains pending');
-      const result = summary(actual);
-      const r = await insert(update.taskId, 'tombo.reconciliation-results', update.executionId, { schema: 1, updateDigest: identity.digest(v.serialise(update)), summary: v.serialise(result) });
-      if (!r.ok) {
-        if (r.error.code !== 'id_collision') return r;
-        const latest = await options.store.snapshot(); if (!latest.ok) return latest;
-        const prior = read(latest.value, 'tombo.reconciliation-results', update.executionId);
-        if (!prior || !v.summary(prior.summary) || prior.updateDigest !== identity.digest(v.serialise(update))) return r;
-        return ok({ kind: 'reconciled', executionId: update.executionId, summary: structuredClone(prior.summary) });
-      }
-      await options.boundary?.('result_committed', update);
-      return ok({ kind: 'reconciled', executionId: update.executionId, summary: result });
-    } catch (error) { return unresolved(`SDK reconciliation unknown: ${error instanceof Error ? error.message : 'host error'}`); }
+          let actual = await options.session.status(update.taskId);
+          if (!v.management(actual)) return unavailable('SDK state unavailable');
+          if (!actual.session.updates.some(r => r.id === update.executionId)) actual = await options.session.receive(update);
+          if (!v.management(actual)) return unavailable('SDK receipt state unavailable');
+          const before = receiptProof(actual, update); if (before) return unavailable(before);
+          if (!actual.state.appliedExecutions.some(e => e.executionId === update.executionId)) {
+            actual = await options.session.apply(update);
+            await options.boundary?.('sdk_updated', update);
+          }
+          if (!v.management(actual)) return unavailable('SDK update result unavailable');
+          const after = receiptProof(actual, update); if (after) return unavailable(after);
+          const observation = update.payload.observations[0];
+          const execution = actual.state.appliedExecutions.find(e => e.executionId === update.executionId);
+          const receipt = actual.session.updates.find(r => r.id === update.executionId);
+          if (!observation || !execution || execution.payloadHash !== identity.digest(observation)) return unavailable('Applied execution missing or payload hash differs');
+          if (actual.state.pendingAssessmentExecutionIds?.includes(update.executionId) || actual.session.pendingUpdates.some(r => r.id === update.executionId)
+            || receipt?.status !== 'applied' || !v.integer(receipt.appliedRevision) || receipt.appliedRevision > actual.state.revision || receipt.appliedRevision < update.expected.revision) return unavailable('Execution or receipt assessment remains pending');
+          return ok({ schema: 1, updateDigest, summary: v.serialise(summary(actual)) });
+        } catch (error) { return unavailable(`SDK reconciliation unknown: ${error instanceof Error ? error.message : 'host error'}`); }
+      },
+      async finish(_intent, proof) {
+        if (!v.summary(proof.summary) || proof.updateDigest !== updateDigest) return unavailable('Invalid saved reconciliation');
+        const row = { schema: 1, updateDigest, summary: v.serialise(proof.summary) };
+        const written = await insert(update.taskId, 'tombo.reconciliation-results', update.executionId, row);
+        if (!written.ok) {
+          if (written.error.code !== 'id_collision') return written;
+          const latest = await options.store.snapshot(); if (!latest.ok) return latest;
+          const prior = read(latest.value, 'tombo.reconciliation-results', update.executionId);
+          if (!prior || !v.summary(prior.summary) || prior.updateDigest !== updateDigest) return written;
+          return ok({ kind: 'reconciled' as const, executionId: update.executionId, summary: structuredClone(prior.summary) });
+        }
+        if (written.value) await options.boundary?.('result_committed', update);
+        return ok({ kind: 'reconciled' as const, executionId: update.executionId, summary: structuredClone(proof.summary) });
+      },
+    }));
+    return result.ok ? result : result.error.code === 'unavailable' ? unresolved(result.error.reason) : result;
   }
   return { inspect: boundary(inspect), receive: boundary(receive), reconcile: boundary(reconcile) };
 }
 
-const inFlight = new WeakMap<TaskStore, Set<string>>();
-function flight(store: TaskStore): Set<string> {
-  let claims = inFlight.get(store);
-  if (!claims) { claims = new Set(); inFlight.set(store, claims); }
-  return claims;
-}
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 const invalid = <T>(issue: string): Result<T> => ({ ok: false, error: { code: 'invalid_input', issues: [issue] } });
 const unavailable = <T>(reason: string): Result<T> => ({ ok: false, error: { code: 'unavailable', reason } });

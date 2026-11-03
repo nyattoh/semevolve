@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { hostIdentity } from '@semevolve/core';
 import { createManagedSession, createTomboBridge } from '@semevolve/tombo-bridge';
-import { commit, fixture, input, update, value } from './support/fixture.mjs';
+import { commit, fixture, input, management, update, value } from './support/fixture.mjs';
 
 test('AT10 receives one observation, reconciles actual execution proof and replays the exact summary', { timeout: 30000 }, async () => {
   const f = fixture();
@@ -114,6 +114,38 @@ test('inspect does not activate when status fails after a session may already ex
   assert.match(second.error.reason, /temporary helper outage/);
   assert.equal(activations, 1);
   assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 0);
+});
+
+test('inspect does not record a partial activation as a completed inspection', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const inspection = input();
+  let activations = 0;
+  let activated = false;
+  const partial = management();
+  partial.session.binding.sessionId = 'partial-session';
+  partial.state.gaps = [{ id: 'partial-gap', importance: 'required', status: 'open' }];
+  partial.understandingStatus.requiredGapIds = ['partial-gap'];
+  f.session.inspect = async () => {
+    activations += 1;
+    if (activations === 1) {
+      activated = true;
+      throw new Error('crash after activate before inspect');
+    }
+    return structuredClone(f.state);
+  };
+  f.session.status = async () => activated ? structuredClone(partial) : null;
+  const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit });
+  const first = await bridge.inspect(inspection);
+  assert.equal(first.ok, false);
+  assert.equal(first.error.code, 'unavailable');
+  const second = await bridge.inspect(structuredClone(inspection));
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.value.reference.sessionRef, 'public-session');
+  assert.deepEqual(second.value.unresolvedGapRefs, ['public-gap']);
+  assert.equal(activations, 2);
+  const bindings = value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings');
+  assert.equal(bindings.length, 1);
+  assert.equal(bindings[0].value.sessionRef, 'public-session');
 });
 
 test('inspect binds an existing session instead of activating another one', { timeout: 30000 }, async () => {
