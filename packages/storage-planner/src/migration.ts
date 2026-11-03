@@ -262,7 +262,7 @@ export class Migrations {
         originalIds: state.dataset.originals.map(o => o.message.envelope.message_id), unitDigest: manifestUnitDigest(units), checkIds: checks.map(c => c.checkId), throughRevision: s.revision }),
       p.replace(final, 'storage.migrations', migration.migrationId, next), p.insert('storage.operations', `${state.intent}/receipt`,
         { kind: 'receipt', operation, executionId: state.intent, migrationId: migration.migrationId, datasetDigest: state.datasetDigest, generation: state.generation, revision: final.revision + 1, pass }));
-    if (pass) mutations.push(p.insert('storage.conformance', state.intent, { mappingDigest: digestJson(state.targetMapping), ids: checks.map(c => c.checkId), criteriaDigest: p.options.comparison.criteriaDigest, evaluatorVersion: p.options.comparison.evaluatorVersion }));
+    if (pass) mutations.push(p.insert('storage.conformance', state.intent, { mappingDigest: digestJson(state.targetMapping), ids: checks.map(c => c.checkId), criteriaDigest: p.options.comparison.criteriaDigest, evaluatorVersion: p.options.comparison.evaluatorVersion, inspectionPlanDigest: p.inspectionPlanDigest() }));
     await p.commit(final, mutations, `${operation}.checked`, { intent: state.intent, migrationId: migration.migrationId, pass, checkRefs: checks.map(c => c.checkId) });
     return migration;
   }

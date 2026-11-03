@@ -28,6 +28,7 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
   const s = await p.snapshot();
   const plan = p.options.comparison;
   if (!Array.isArray(plan.queries) || plan.queries.length === 0) v.invalid('Comparison requires at least one query');
+  if (!Array.isArray(plan.originalIds) || plan.originalIds.length === 0) v.invalid('Comparison requires at least one original');
   const originals = await Promise.all(plan.originalIds.map(id => p.original(s, id)));
   for (const proposal of [baseline, candidate]) {
     if (!v.same(v.find(s, 'storage.proposals', proposal.proposalId), proposal) || proposal.baselineProposalId !== baseline.proposalId
@@ -60,8 +61,10 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
       introductionUsage: usage(), decompositionUsage: usage(writeElapsedMs), retrievalUsage: usage(queryElapsedMs.reduce((a, b) => a + b, 0)), migrationUsage: usage(), recoveryUsage: usage(),
       environmentRef: `${plan.environmentRef}; measurement=${plan.measurement.kind}`, cacheCondition: plan.cacheCondition };
   }
-  const baselinePass = inspections.slice(0, plan.queries.length).every(c => p.passing(c.result));
-  const candidatePass = inspections.slice(plan.queries.length).every(c => p.passing(c.result));
+  const span = plan.queries.length;
+  if (inspections.length !== span * 2) v.invalid('Comparison requires one check per query for each proposal');
+  const baselinePass = inspections.slice(0, span).every(c => p.passing(c.result));
+  const candidatePass = inspections.slice(span).every(c => p.passing(c.result));
   const result: StorageComparison = { executionId: p.identity.newId('execution'), baselineProposalId: baseline.proposalId, candidateProposalId: candidate.proposalId,
     languageVersionId: baseline.languageVersionId, originalSetDigest: digestJson(originals), querySetDigest: digestJson(plan.queries), budgetRef: plan.budgetRef,
     criteriaDigest: plan.criteriaDigest, measurements, checkRefs, limitation: `${plan.measurement.kind} timings; public synthetic checks; null counts, index bytes, token and cost values are unmeasured; no production performance or adoption authority` };

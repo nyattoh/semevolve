@@ -173,10 +173,15 @@ export class Planner {
     }
     return checks;
   }
+  inspectionPlanDigest(): string {
+    const plan = this.options.comparison;
+    return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions });
+  }
   async inspectMapping(input: Mapping): Promise<readonly StorageInspection[]> {
     const mapping = structuredClone(input);
     const s = await this.snapshot();
     await this.registered(s, mapping);
+    if (!Array.isArray(this.options.comparison.originalIds) || this.options.comparison.originalIds.length === 0) v.invalid('Inspection requires at least one original');
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
     const captured = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const units = await this.project(s, mapping, originals);
@@ -190,6 +195,7 @@ export class Planner {
     const s = await this.snapshot();
     await this.registered(s, mapping);
     if (!v.unique(ids) || ids.length !== this.options.comparison.queries.length || ids.length === 0) v.invalid('Missing real storage inspection checks');
+    if (!Array.isArray(this.options.comparison.originalIds) || this.options.comparison.originalIds.length === 0) v.invalid('Conformance requires at least one original');
     const originals = await Promise.all(this.options.comparison.originalIds.map(id => this.original(s, id)));
     const inputState = this.options.inspectionEligibility ? await this.inspectionInput(s, [mapping], originals) : null;
     const checks: StorageInspection[] = [];
@@ -201,26 +207,23 @@ export class Planner {
       if (!v.object(c) || !v.object(c.request) || !v.object(c.request.retrieved) || !v.object(c.result) || c.checkId !== id || c.mappingDigest !== digestJson(mapping)
         || c.originalSetDigest !== digestJson(originals) || c.querySetDigest !== digestJson(this.options.comparison.queries)
         || c.request.criteriaDigest !== this.options.comparison.criteriaDigest || c.request.evaluatorVersion !== this.options.comparison.evaluatorVersion || c.request.scope !== this.options.scope
+        || !v.same((c.request as { expectedConditions?: unknown }).expectedConditions, this.options.comparison.expectedConditions)
         || !v.same((c.request.retrieved as any).query, expectedQuery)) v.invalid('Mismatched conformance check');
       this.checkResult(c.result as unknown as StorageCheckResult, c.request as unknown as StorageInspection['request']);
       if (!this.passing(c.result as unknown as StorageCheckResult)) v.unavailable('Storage combination is not independently verified');
       checks.push(c as unknown as StorageInspection);
     }
     const final = inputState ? await this.revalidateInspection(inputState, checks) : s;
-    const conformanceRecord: Record<string, unknown> = { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion };
-    if (!this.options.inspectionEligibility) {
-      const inspectionPlanDigest = digestJson({ queries: this.options.comparison.queries, expectedConditions: this.options.comparison.expectedConditions });
-      conformanceRecord.inspectionPlanDigest = inspectionPlanDigest;
-    }
+    const conformanceRecord = { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion, inspectionPlanDigest: this.inspectionPlanDigest() };
     await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), conformanceRecord);
   }
   passing(result: StorageCheckResult): boolean { return result.literalRestoration === 'pass' && result.meaningPreservation === 'pass' && result.retrievalCorrectness === 'pass'; }
   async verified(s: StoreSnapshot, mapping: Mapping): Promise<void> {
     await this.registered(s, mapping);
-    const inspectionPlanDigest = digestJson({ queries: this.options.comparison.queries, expectedConditions: this.options.comparison.expectedConditions });
+    const inspectionPlanDigest = this.inspectionPlanDigest();
     const found = v.rows(s, 'storage.conformance').some(c => {
       if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest || c.evaluatorVersion !== this.options.comparison.evaluatorVersion) return false;
-      if (!this.options.inspectionEligibility && typeof c.inspectionPlanDigest === 'string' && c.inspectionPlanDigest !== inspectionPlanDigest) return false;
+      if (!this.options.inspectionEligibility && c.inspectionPlanDigest !== inspectionPlanDigest) return false;
       return true;
     });
     if (!found) v.unavailable('Unverified language/rule/storage combination');
