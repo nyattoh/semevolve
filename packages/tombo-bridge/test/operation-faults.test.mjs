@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { operationSteps } from '@semevolve/core';
 import { createTomboBridge } from '@semevolve/tombo-bridge';
-import { commit, fixture, input, update, value } from './support/fixture.mjs';
+import { commit, fixture, input, inspected, update, value } from './support/fixture.mjs';
 
 function crashOnce(step, name) {
   let pending = true;
@@ -23,7 +23,7 @@ const crash = async (result, step, name) => {
 for (const step of operationSteps) test(`tombo.inspect recovers after a crash at ${step}`, { timeout: 30000 }, async () => {
   let activations = 0;
   const f = fixture({ fault: crashOnce(step, 'tombo.inspect') });
-  f.session.inspect = async () => { activations += 1; return structuredClone(f.state); };
+  f.session.inspect = async () => { activations += 1; return inspected(f.state); };
   const inspection = input();
   await crash(await f.bridge.inspect(inspection), step, 'tombo.inspect');
   assert.equal(activations, step === 'effect' ? 1 : 0);

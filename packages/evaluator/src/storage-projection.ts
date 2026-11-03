@@ -1,4 +1,4 @@
-import { canonicalJson, digestJson, isUtcTimestamp } from '@semevolve/core';
+import { canonicalJson, digestJson, isUtcTimestamp, sameManifest } from '@semevolve/core';
 import type { JsonObject, JsonValue, Verdict } from '@semevolve/core';
 import type { StorageCheckRequest } from './contracts/evaluation.js';
 import * as v from './validation.js';
@@ -72,7 +72,7 @@ const observed = (record: JsonObject, key: string, expected: JsonValue): Verdict
 
 export function judgeProjection(request: StorageCheckRequest, rules: ProjectionConditions): ProjectionJudgement {
   const parsed = projectionOriginals(request);
-  if (parsed.kind !== 'valid') {
+  if (parsed.kind !== 'valid' || !sameManifest(parsed.originals.map(original => original.messageId), Object.keys(rules.payloads))) {
     const verdict = parsed.kind === 'missing' ? 'inconclusive' : 'fail';
     return { literalRestoration: verdict, meaningPreservation: verdict, retrievalCorrectness: verdict, limitation };
   }
@@ -120,7 +120,7 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
     if (!isUtcTimestamp(unit.createdAt)) meanings.push('fail');
   }
   const query = Object.hasOwn(input, 'query') ? rules.queries.find(q => v.same(q.query, input.query)) : undefined;
-  const retrievalCorrectness = invalidSelection || new Set(selectedIds).size !== selectedIds.length ? 'fail' : query === undefined ? 'inconclusive'
-    : v.same([...selectedIds].sort(), [...query.messageIds].sort()) ? 'pass' : 'fail';
+  const retrievalCorrectness = invalidSelection ? 'fail' : query === undefined ? 'inconclusive'
+    : sameManifest(selectedIds, [...query.messageIds]) ? 'pass' : 'fail';
   return { literalRestoration, meaningPreservation: combine(meanings), retrievalCorrectness, limitation };
 }

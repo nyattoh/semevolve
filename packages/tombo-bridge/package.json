@@ -19,7 +19,7 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b",
-    "test": "node --test --test-reporter=tap test/reconciliation.test.mjs test/operation-faults.test.mjs",
+    "test": "node --test --test-reporter=tap test/reconciliation.test.mjs test/operation-faults.test.mjs test/real-completion.test.mjs",
     "test:sdk": "node test/support/run-sdk-tests.mjs"
   },
   "dependencies": {

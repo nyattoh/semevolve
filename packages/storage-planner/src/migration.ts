@@ -1,4 +1,4 @@
-import { digestJson, isUtcTimestamp } from '@semevolve/core';
+import { digestJson, isUtcTimestamp, sameManifest } from '@semevolve/core';
 import type { ExecutionId, StoreSnapshot, StoreMutation } from '@semevolve/core';
 import type { Mapping, Migration, MigrationPort } from './contracts/storage.js';
 import type { OriginalInput, StorageHead, StorageInspection } from './types.js';
@@ -253,7 +253,8 @@ export class Migrations {
     const intentRecord = v.find(final, 'storage.operations', `${state.intent}/intent`);
     if (!v.object(intentRecord) || intentRecord.policyRevision !== authorised) return v.unavailable('Projection authority changed before completion');
     await this.unchanged(final, state);
-    const pass = checks.length > 0 && checks.every(c => p.passing(c.result));
+    const queries = p.options.comparison.queries;
+    const pass = queries.length > 0 && sameManifest(checks.map(c => v.object(c.request.retrieved) ? c.request.retrieved.query : undefined), queries) && checks.every(c => p.passing(c.result));
     const migration: Migration = { ...state.migration, checkRefs: [...state.migration.checkRefs, ...checks.map(c => c.checkId)], pendingOperation: null,
       reconciledThroughRevision: s.revision, shadowRef: state.generation };
     const next: State = { ...state, migration, phase: pass ? operation === 'copy' ? 'shadow_ready' : 'checked' : 'blocked' };
@@ -433,8 +434,9 @@ export class Migrations {
     if (!v.same(p.headAt(final), head) || digestJson(await this.dataset(final)) !== state.datasetDigest) return v.unavailable('New delta invalidated restoration; pending verification is retained');
     if (await this.permit(final, 'restore', ref) !== evidence.policyRevision) return v.unavailable('Pending restoration policy revision changed');
     await this.unchanged(final, state);
-    const pass = projection.ok && projection.value.checks.length > 0 && projection.value.checks.every(c => p.passing(c.result));
+    const queries = p.options.comparison.queries;
     const checks = projection.ok ? projection.value.checks : [];
+    const pass = projection.ok && queries.length > 0 && sameManifest(checks.map(c => v.object(c.request.retrieved) ? c.request.retrieved.query : undefined), queries) && checks.every(c => p.passing(c.result));
     const reason = projection.ok ? 'Old-format literal, meaning or retrieval inspection did not pass' : projection.error.code === 'unavailable' ? projection.error.reason : JSON.stringify(projection.error);
     const migration: Migration = { ...state.migration, pendingOperation: null, checkRefs: [...state.migration.checkRefs, ...checks.map(c => c.checkId)],
       restoration: pass ? { verified: true, throughRevision: inspectionSnapshot.revision, checkRefs: checks.map(c => c.checkId) } : { verified: false, reason } };

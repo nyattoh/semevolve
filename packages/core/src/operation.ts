@@ -1,4 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
+import { completionProven } from './completion.js';
 import type { HostIdentity, JsonObject, Result, TaskId } from './contracts/identity.js';
 import type { StoreSnapshot, TaskStore } from './contracts/task-store.js';
 
@@ -13,6 +14,8 @@ export interface OperationSpec<T> {
   readonly taskId: TaskId;
   readonly recover: 'rerun' | 'unknown';
   readonly pendingReason: string;
+  readonly identity: JsonObject;
+  readonly steps: readonly string[];
   intent(snapshot: StoreSnapshot): JsonObject | null;
   same(stored: JsonObject): boolean;
   proof(snapshot: StoreSnapshot): JsonObject | null;
@@ -49,7 +52,7 @@ export async function runOperation<T>(store: TaskStore, identity: HostIdentity, 
     const stored = spec.intent(snapshot);
     const proved = spec.proof(snapshot);
     if (stored && !spec.same(stored)) return collision(spec.key);
-    if (!proved || !stored) return undefined;
+    if (!proved || !stored || !completionProven(proved, spec)) return undefined;
     return spec.finish(stored, proved);
   }
   async function runEffect(intent: JsonObject, recovery: boolean): Promise<Result<T>> {
@@ -59,6 +62,7 @@ export async function runOperation<T>(store: TaskStore, identity: HostIdentity, 
     try {
       const produced = await spec.effect(intent, recovery);
       if (!produced.ok) return produced;
+      if (!completionProven(produced.value, spec)) return unavailable(`Completion proof for ${spec.name} does not bind its identity and every required step`);
       if (spec.fault) await spec.fault('effect', spec.name);
       return spec.finish(intent, produced.value);
     } finally { keys.delete(flightKey); }

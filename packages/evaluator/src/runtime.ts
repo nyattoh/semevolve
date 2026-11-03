@@ -1,4 +1,4 @@
-import { hostIdentity, isUtcTimestamp, runOperation } from '@semevolve/core';
+import { completionProven, hostIdentity, isUtcTimestamp, runOperation } from '@semevolve/core';
 import type { CheckExecution, CheckId, ExecutionId, HostIdentity, Interpretation, InvocationId, JsonObject, JsonValue, LanguageVersionId, MessageId, PeerId, ReservationId, Result, StoreSnapshot, TaskId, TaskStore, Usage } from '@semevolve/core';
 import type { OperationSpec, OperationStep } from '@semevolve/core';
 import type { EvaluationPort, EvaluationRequest, EvidenceWithdrawal, StorageCheckRequest, StorageCheckResult } from './contracts/evaluation.js';
@@ -6,7 +6,7 @@ import { collision, invalid, ok, read, records, unavailable } from './records.js
 import * as v from './validation.js';
 import { compare, conditions, retrieval, storageConditions } from './conditions.js';
 import { bodyDigest, checkSources } from './evidence.js';
-import { executionLog, storageResult } from './executions.js';
+import { evaluationSteps, executionIdentity, executionLog, storageResult } from './executions.js';
 import { judgeProjection, projectionOriginals, storageInput } from './storage-projection.js';
 import type { ProjectionOriginal } from './storage-projection.js';
 
@@ -196,12 +196,17 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     if (!v.text(request.evidenceId) || !v.text(request.reason) || !isUtcTimestamp(request.withdrawnAt)) return invalid('Invalid evidence withdrawal');
     const id = identity.digest(v.serialise(request));
     const intent = { schema: 1, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt };
+    const operationIdentity = { withdrawalId: id, evidenceId: request.evidenceId, reason: request.reason, withdrawnAt: request.withdrawnAt };
+    const steps = ['observed'] as const;
     const succeeded = (snapshot: StoreSnapshot) => read(snapshot, 'evaluator.withdrawal-reconciliation', identity.digest([id, true]));
     return runOperation(options.store, identity, attempts, hooked({
-      name: 'evaluator.invalidate', key: id, taskId: run.taskId, recover: 'rerun', pendingReason: 'Evidence invalidation already in flight',
+      name: 'evaluator.invalidate', key: id, taskId: run.taskId, recover: 'rerun', pendingReason: 'Evidence invalidation already in flight', identity: operationIdentity, steps,
       intent: snapshot => read(snapshot, 'evaluator.withdrawals', id) ?? null,
       same: stored => v.same(stored, intent),
-      proof: snapshot => succeeded(snapshot) ?? null,
+      proof: snapshot => {
+        const row = succeeded(snapshot);
+        return row && v.record(row.identity) && Array.isArray(row.steps) ? row : null;
+      },
       async prepare() {
         const s = await options.store.snapshot(); if (!s.ok) return s;
         if (!read(s.value, 'evaluator.evidence', request.evidenceId)) return invalid('Evidence is not registered');
@@ -209,15 +214,15 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       },
       async effect() {
         const current = await options.store.snapshot(); if (!current.ok) return current;
-        if (succeeded(current.value)) return ok({ schema: 1, applied: true, reason: null });
+        if (succeeded(current.value)) return ok({ schema: 1, applied: true, reason: null, identity: operationIdentity, steps: [...steps] });
         const done = options.invalidateEvidence ? await options.invalidateEvidence(request) : unavailable('TOMBO invalidation not connected');
-        return ok({ schema: 1, applied: done.ok, reason: done.ok ? null : v.serialise(done.error) });
+        return ok({ schema: 1, applied: done.ok, reason: done.ok ? null : v.serialise(done.error), identity: operationIdentity, steps: [...steps] });
       },
       async finish(_intent, payload) {
         const current = await options.store.snapshot(); if (!current.ok) return current;
         if (succeeded(current.value)) return ok(undefined);
         if (payload.applied === true && payload.reason === null) {
-          const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: true, reason: null };
+          const observation = { schema: 1, withdrawalId: id, evidenceId: request.evidenceId, applied: true, reason: null, identity: operationIdentity, steps: [...steps] };
           const recorded = await log.insert('evaluator.withdrawal-reconciliation', identity.digest([id, true]), observation, 'evaluator.withdrawal_reconciled');
           return recorded.ok ? ok(undefined) : recorded;
         }
@@ -236,7 +241,12 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     if (!saved || !v.record(saved.value) || !v.execution(saved.value.result)) return unavailable('Check not found');
     const execution: CheckExecution = saved.value.result;
     const source = read(s.value, 'evaluator.requests', execution.executionId);
-    if (!source || !evaluationRequest(source.request) || source.runId !== run.runId || source.requestDigest !== saved.value.requestDigest
+    const configuration = read(s.value, 'evaluator.runs', run.runId)?.configuration;
+    const proven = source && evaluationRequest(source.request) ? executionIdentity(value => identity.digest(value), run, source.request, 'evaluation') : null;
+    const persisted = source && evaluationRequest(source.request) && validRun(configuration) ? executionIdentity(value => identity.digest(value), configuration, source.request, 'evaluation') : null;
+    if (!source || !evaluationRequest(source.request) || !proven || !persisted || !completionProven({ identity: persisted, steps: [...evaluationSteps] }, { identity: proven, steps: [...evaluationSteps] })
+      || !completionProven(saved.value, { identity: proven, steps: [...evaluationSteps] })
+      || source.runId !== run.runId || source.requestDigest !== saved.value.requestDigest
       || source.requestDigest !== identity.digest(v.serialise({ runId: run.runId, kind: 'evaluation', request: source.request }))
       || source.request.criteriaDigest !== run.criteriaDigest || source.request.evaluatorVersion !== run.evaluatorVersion || source.request.inputDigest !== execution.inputDigest
       || source.request.taskId !== execution.taskId || source.request.scope !== execution.result.scope || source.request.dimension !== execution.result.dimension
@@ -249,7 +259,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const pending = affected.some(evidenceId => !s.value.entries.some(e => e.key.collection === 'evaluator.withdrawal-reconciliation' && v.record(e.value) && e.value.evidenceId === evidenceId && e.value.applied === true));
     return ok({ eligible: execution.result.verdict === 'pass' && affected.length === 0 && !invalidated, recheckRequired: affected.length > 0 || invalidated,
       reason: affected.length ? 'Evidence withdrawn; a new execution ID is required' : invalidated ? 'Comparison run invalidated' : execution.result.verdict !== 'pass' ? 'Check did not pass' : null,
-      runId: run.runId, testSetDigest: run.testSetDigest, execution: structuredClone(execution), request: structuredClone(source.request), tomboInvalidationPending: pending });
+      runId: run.runId, testSetDigest: v.text(proven.testSetDigest) ? proven.testSetDigest : run.testSetDigest, execution: structuredClone(execution), request: structuredClone(source.request), tomboInvalidationPending: pending });
   }
   function referencedStorageCheck(snapshot: StoreSnapshot, checkId: string, original: ProjectionOriginal): { runId: string; evidenceIds: readonly string[] } {
     const matches = snapshot.entries.filter(e => e.key.collection === 'evaluator.executions' && v.record(e.value) && v.execution(e.value.result) && e.value.result.result.checkId === checkId);
@@ -271,6 +281,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || req.criteriaDigest !== configuration.criteriaDigest || req.evaluatorVersion !== configuration.evaluatorVersion || execution.result.evaluatorVersion !== configuration.evaluatorVersion
       || req.dimension !== execution.result.dimension || req.inputDigest !== execution.inputDigest || req.inputDigest !== identity.digest(evaluationInput(req))
       || !v.record(configuration.expectedConditions) || !v.same(req.expectedConditions, configuration.expectedConditions[req.dimension])
+      || !completionProven(saved, { identity: executionIdentity(value => identity.digest(value), configuration, req, 'evaluation'), steps: [...evaluationSteps] })
       || !v.same(execution.result.evidenceIds, [...req.evidence.map(e => e.evidenceId), `observation-${execution.executionId}`])) throw new Error('Canonical referenced check linkage is invalid');
     for (const evidenceId of execution.result.evidenceIds) {
       const evidence = read(snapshot, 'evaluator.evidence', evidenceId)?.evidence;
@@ -324,7 +335,8 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || req.inputDigest !== identity.digest(storageInput(req)) || result.inputDigest !== req.inputDigest
       || source.requestDigest !== saved.requestDigest || source.requestDigest !== identity.digest(v.serialise({ runId: run.runId, kind: 'storage', request: req }))
       || !storageConditions(rules) || !v.same(rules, expected.storage)
-      || !v.same(result.evidenceIds, [`observation-${executionId}`])) return unavailable('Canonical storage request and result linkage is invalid');
+      || !v.same(result.evidenceIds, [`observation-${executionId}`])
+      || !completionProven(saved, { identity: executionIdentity(value => identity.digest(value), run, req, 'storage'), steps: [...evaluationSteps] })) return unavailable('Canonical storage request and result linkage is invalid');
     const evidence = read(s, 'evaluator.evidence', `observation-${executionId}`)?.evidence;
     if (!v.same(evidence, { evidenceId: `observation-${executionId}`, kind: 'synthetic-storage-observation', original: req.original, retrieved: req.retrieved })) return unavailable('Canonical storage observation is unavailable');
     const judgement = rules.kind === 'storage-projection-v1' ? judgeProjection(req, rules) : {

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { hostIdentity } from '@semevolve/core';
 import { createManagedSession, createTomboBridge } from '@semevolve/tombo-bridge';
-import { commit, fixture, input, management, update, value } from './support/fixture.mjs';
+import { commit, fixture, input, inspected, management, update, value } from './support/fixture.mjs';
 
 test('AT10 receives one observation, reconciles actual execution proof and replays the exact summary', { timeout: 30000 }, async () => {
   const f = fixture();
@@ -67,7 +67,7 @@ test('concurrent inspect returns the saved summary instead of colliding on retri
     if (waiting === 2) release();
     else await gate;
   };
-  f.session.inspect = async () => { await pause(); return structuredClone(f.state); };
+  f.session.inspect = async () => { await pause(); return inspected(f.state); };
   f.session.status = async () => { await pause(); return structuredClone(f.state); };
   const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit, identity });
   const inspection = input();
@@ -85,7 +85,7 @@ test('inspect creates the session on retry when the claim survived but activatio
   f.session.inspect = async () => {
     activations += 1;
     if (activations === 1) throw new Error('crash before session creation');
-    return structuredClone(f.state);
+    return inspected(f.state);
   };
   f.session.status = async () => null;
   const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit });
@@ -131,7 +131,7 @@ test('inspect does not record a partial activation as a completed inspection', {
       activated = true;
       throw new Error('crash after activate before inspect');
     }
-    return structuredClone(f.state);
+    return inspected(f.state);
   };
   f.session.status = async () => activated ? structuredClone(partial) : null;
   const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit });
@@ -161,7 +161,7 @@ test('inspect binds an existing session instead of activating another one', { ti
     close: () => f.store.close(),
   };
   let activations = 0;
-  f.session.inspect = async () => { activations += 1; return structuredClone(f.state); };
+  f.session.inspect = async () => { activations += 1; return inspected(f.state); };
   const bridge = createTomboBridge({ store, session: f.session, sdkCommit: commit });
   const first = await bridge.inspect(inspection);
   assert.equal(first.ok, false);

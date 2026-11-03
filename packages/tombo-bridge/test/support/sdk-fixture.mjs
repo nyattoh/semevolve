@@ -18,7 +18,7 @@ export async function sdkOptions(existing) {
   const taskDirectory = existing?.taskDirectory ?? await mkdtemp(join(allowedTaskRoot, 'semevolve-e-sdk-task-'));
   const now = existing?.startedAt ?? new Date().toISOString();
   const task = { schemaVersion: '0.1', taskId: 'public-task', goal: 'Synthetic fixed SDK bridge compatibility only', mode: 'explain', successCriteria: ['Track independent public observations without network inference'], evidence: [], reflectionRequired: true, capabilities: ['public-source-read'], budget: { maxRounds: 6, maxModelCalls: 12, maxToolCalls: 12, maxElapsedMs: 60000, maxInputChars: 1000000, maxOutputTokensPerCall: 4096 } };
-  const options = { runtimeRoot, allowedTaskRoot, taskDirectory, task, readerId: 'evaluator', evidenceMetadata: [], taskClock: { startedAt: now, deadlineAt: new Date(Date.parse(now) + 60000).toISOString(), basis: 'first_observed', sourceRef: 'synthetic-test:initial-os-clock' }, propose(operation, context) {
+  const options = { runtimeRoot, allowedTaskRoot, taskDirectory, task, readerId: 'evaluator', evidenceMetadata: existing?.evidenceMetadata ?? [], taskClock: { startedAt: now, deadlineAt: new Date(Date.parse(now) + 60000).toISOString(), basis: 'first_observed', sourceRef: 'synthetic-test:initial-os-clock' }, ...(existing?.fault ? { fault: existing.fault } : {}), propose(operation, context) {
     if (operation === 'inspect') return proposal;
     const evidence = context.request.observations.flatMap(o => o.evidence);
     return evidence.length ? { assessments: [{ claimId: 'public-factuality-claim', evidenceIds: evidence.map(e => e.id), verdict: 'refutes', scopeMatched: true, reason: 'Structured public source records Y instead of X' }] } : {};

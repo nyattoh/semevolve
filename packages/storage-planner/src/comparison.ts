@@ -1,4 +1,4 @@
-import { canonicalJson, digestJson } from '@semevolve/core';
+import { canonicalJson, digestJson, sameManifest } from '@semevolve/core';
 import type { Usage, Verdict } from '@semevolve/core';
 import type { StorageComparison, StorageMeasurements, StorageProposal } from './contracts/storage.js';
 import type { Planner } from './planner.js';
@@ -64,7 +64,8 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
       environmentRef: `${plan.environmentRef}; measurement=${plan.measurement.kind}`, cacheCondition: plan.cacheCondition };
   }
   const span = plan.queries.length;
-  if (inspections.length !== span * 2) v.invalid('Comparison requires one check per query for each proposal');
+  const queryOf = (check: { readonly request: { readonly retrieved: unknown } }): unknown => v.object(check.request.retrieved) ? check.request.retrieved.query : undefined;
+  if (inspections.length !== span * 2 || !sameManifest(inspections.slice(0, span).map(queryOf), plan.queries) || !sameManifest(inspections.slice(span).map(queryOf), plan.queries)) v.invalid('Comparison requires one check per query for each proposal');
   const baselinePass = inspections.slice(0, span).every(c => p.passing(c.result));
   const candidatePass = inspections.slice(span).every(c => p.passing(c.result));
   const result: StorageComparison = { executionId: p.identity.newId('execution'), baselineProposalId: baseline.proposalId, candidateProposalId: candidate.proposalId,

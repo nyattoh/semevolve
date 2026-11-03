@@ -8,27 +8,35 @@ import * as v from './validation.js';
 
 export interface ExecutionProduct { readonly result: CheckExecution | StorageCheckResult; readonly evidence: JsonValue; readonly usage: Usage }
 export interface ExecutionReservation { readonly collection: string; readonly id: string; readonly value: JsonObject }
+export const evaluationSteps = ['judged', 'settled'] as const;
 const pending = 'Execution is pending or unknown; no new start permitted';
+export function executionIdentity(digest: (value: JsonValue) => string, run: Pick<EvaluatorRun, 'runId' | 'taskId' | 'testSetDigest' | 'criteriaDigest' | 'evaluatorVersion' | 'languageVersionId' | 'scope'>, request: EvaluationRequest | StorageCheckRequest, kind: 'evaluation' | 'storage'): JsonObject {
+  const snapshot = 'interpretation' in request ? request.interpretation.inputSnapshot : null;
+  const fingerprint = v.record(snapshot) && snapshot.fingerprint !== undefined && v.json(snapshot.fingerprint) ? snapshot.fingerprint : null;
+  return { runId: run.runId, taskId: run.taskId, testSetDigest: run.testSetDigest, criteriaDigest: run.criteriaDigest, evaluatorVersion: run.evaluatorVersion,
+    languageVersionId: run.languageVersionId, scope: run.scope, executionId: request.executionId, requestDigest: digest(v.serialise({ runId: run.runId, kind, request })), fingerprint };
+}
 export function executionLog(store: TaskStore, identity: HostIdentity, run: EvaluatorRun, budget: EvaluatorOptions['budget'], attempts: number, timeoutMs: number, signal: AbortSignal | undefined, fault?: (step: OperationStep, name: string) => Promise<void>) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('Invalid checker timeout');
   const log = records(store, identity, run.taskId, attempts);
   async function runCheck(request: EvaluationRequest | StorageCheckRequest, kind: 'evaluation' | 'storage', reservations: readonly ExecutionReservation[], judge: (snapshot: import('@semevolve/core').StoreSnapshot, signal: AbortSignal) => Promise<ExecutionProduct>): Promise<Result<CheckExecution | StorageCheckResult>> {
     const requestDigest = identity.digest(v.serialise({ runId: run.runId, kind, request }));
+    const operationIdentity = executionIdentity(value => identity.digest(value), run, request, kind);
     const rejection = { operation: kind === 'evaluation' ? 'evaluate' : 'evaluateStorage', runId: run.runId, executionId: request.executionId, requestDigest };
     const resultCollection = kind === 'evaluation' ? 'evaluator.executions' : 'evaluator.storage-results';
     const outcome = await runOperation<CheckExecution | StorageCheckResult>(store, identity, attempts, {
-      name: 'evaluator.execution', key: request.executionId, taskId: request.taskId, recover: 'unknown', pendingReason: pending,
+      name: 'evaluator.execution', key: request.executionId, taskId: request.taskId, recover: 'unknown', pendingReason: pending, identity: operationIdentity, steps: evaluationSteps,
       ...(fault ? { fault } : {}),
       intent: snapshot => read(snapshot, 'evaluator.requests', request.executionId) ?? null,
       same: stored => stored.requestDigest === requestDigest && stored.runId === run.runId && v.same(stored.request, request),
       proof: snapshot => {
         const saved = read(snapshot, resultCollection, request.executionId);
-        if (!saved || saved.requestDigest !== requestDigest) return null;
+        if (!saved || saved.requestDigest !== requestDigest || !v.record(saved.identity) || !Array.isArray(saved.steps)) return null;
         const serialised = v.serialise(saved.result);
         if (!v.record(serialised)) return null;
         if (kind === 'evaluation' && !v.execution(serialised)) return null;
         if (kind === 'storage' && !storageResult(serialised)) return null;
-        return { phase: 'saved', result: serialised };
+        return { phase: 'saved', result: serialised, identity: saved.identity, steps: saved.steps };
       },
       async prepare() {
         const state = await store.snapshot(); if (!state.ok) return state;
@@ -78,6 +86,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
           finally { removeAbort(); }
           const settled = await runOperation(store, identity, attempts, {
             name: 'evaluator.settle', key: request.executionId, taskId: request.taskId, recover: 'unknown', pendingReason: pending,
+            identity: { executionId: request.executionId, reservationId: binding.reservationId, outcome: 'completed' }, steps: ['settled'],
             ...(fault ? { fault } : {}),
             intent: snapshot => read(snapshot, 'evaluator.settle-intents', request.executionId) ?? null,
             same: stored => stored.reservationId === binding.reservationId && stored.kind === 'completed',
@@ -89,10 +98,10 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
             async effect() {
               const completed = await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'completed', usage: product.usage } });
               if (!completed.ok) return completed;
-              return ok({ schema: 1, reservationId: binding.reservationId, settled: true });
+              return ok({ schema: 1, reservationId: binding.reservationId, settled: true, identity: { executionId: request.executionId, reservationId: binding.reservationId, outcome: 'completed' }, steps: ['settled'] });
             },
             async finish() {
-              const row = { schema: 1, reservationId: binding.reservationId, settled: true };
+              const row = { schema: 1, reservationId: binding.reservationId, settled: true, identity: { executionId: request.executionId, reservationId: binding.reservationId, outcome: 'completed' }, steps: ['settled'] };
               for (let i = 0; i < attempts; i++) {
                 const s = await store.snapshot(); if (!s.ok) return s;
                 const old = read(s.value, 'evaluator.settle-proofs', request.executionId);
@@ -108,7 +117,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
           const evidence = v.serialise(product.evidence);
           const result = v.serialise(product.result);
           if (!v.record(evidence) || !v.record(result)) return unavailable('Unexpected execution product');
-          return ok({ phase: 'product', result, evidence, usage: v.serialise(product.usage) });
+          return ok({ phase: 'product', result, evidence, usage: v.serialise(product.usage), identity: operationIdentity, steps: [...evaluationSteps] });
         } catch (error) {
           if (reserved) {
             const usage: Usage = { inputTokens: null, outputTokens: null, reasoningTokens: null, costYen: null, elapsedMs: performance.now() - startedAt, source: 'unavailable' };
@@ -136,7 +145,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
             return unavailable('Invalid persisted execution product');
           }
           const written = await log.append(s.value, [
-            { collection: resultCollection, id: request.executionId, value: { schema: 1, requestDigest, result: payload.result, usage: payload.usage } },
+            { collection: resultCollection, id: request.executionId, value: { schema: 1, requestDigest, result: payload.result, usage: payload.usage, identity: operationIdentity, steps: [...evaluationSteps] } },
             { collection: 'evaluator.evidence', id: `observation-${request.executionId}`, value: { schema: 1, evidence: payload.evidence } },
           ], 'evaluator.completed', { executionId: request.executionId, reservationId: v.text(_intent.reservationId) ? _intent.reservationId : null });
           if (written.ok) {

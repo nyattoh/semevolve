@@ -4,8 +4,13 @@ import type { OperationSpec, OperationStep } from '@semevolve/core';
 import type { PendingTomboUpdate, TomboInspectionInput, TomboInspectionSummary, TomboPort, TomboReconciliation } from './contracts/tombo.js';
 import * as v from './validation.js';
 
+export const inspectionSteps = ['activated', 'prepared', 'inspected'] as const;
+const pendingSteps = ['recorded'] as const;
+const receiveSteps = ['received'] as const;
+const applySteps = ['applied'] as const;
+export interface InspectionCompletion { readonly actual: unknown; readonly steps: readonly string[] }
 export interface ManagedSessionPort {
-  inspect(input: TomboInspectionInput): Promise<unknown>;
+  inspect(input: TomboInspectionInput): Promise<InspectionCompletion>;
   status(taskId: string): Promise<unknown>;
   receive(update: PendingTomboUpdate): Promise<unknown>;
   apply(update: PendingTomboUpdate): Promise<unknown>;
@@ -54,8 +59,9 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     if (!v.inspection(input)) return invalid('Invalid TOMBO inspection input');
     const inputDigest = identity.digest(v.serialise(input));
     const claim = { schema: 1, input: v.serialise(input), inputDigest, sdkCommit: options.sdkCommit };
+    const operationIdentity = { taskId: input.taskId, inputDigest, sdkCommit: options.sdkCommit };
     return runOperation(options.store, identity, attempts, hooked({
-      name: 'tombo.inspect', key: input.taskId, taskId: input.taskId, recover: 'rerun', pendingReason: 'Inspect already in flight',
+      name: 'tombo.inspect', key: input.taskId, taskId: input.taskId, recover: 'rerun', pendingReason: 'Inspect already in flight', identity: operationIdentity, steps: inspectionSteps,
       intent: s => read(s, 'tombo.inspect-claims', input.taskId) ?? null,
       same: stored => stored.inputDigest === inputDigest && stored.sdkCommit === options.sdkCommit && v.same(stored.input, claim.input),
       proof: s => {
@@ -69,15 +75,17 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
           try { await options.session.status(input.taskId); }
           catch (error) { return unavailable(error instanceof Error ? error.message : 'SDK inspection state or session unavailable'); }
         }
-        let actual: unknown;
-        try { actual = await options.session.inspect(input); }
+        let product: unknown;
+        try { product = await options.session.inspect(input); }
         catch (error) { return unavailable(error instanceof Error ? error.message : 'SDK inspection state or session unavailable'); }
-        if (!v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
-        return ok({ schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(actual) });
+        const steps = v.record(product) && Array.isArray(product.steps) && product.steps.every(step => typeof step === 'string') ? product.steps : null;
+        const actual = v.record(product) ? product.actual : undefined;
+        if (!steps || !v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
+        return ok({ schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(actual), identity: operationIdentity, steps: [...steps] });
       },
       async finish(_intent, proof) {
         if (!v.management(proof.actual) || proof.inputDigest !== inputDigest || proof.sdkCommit !== options.sdkCommit) return unavailable('SDK inspection state or session unavailable');
-        const recorded = await insert(input.taskId, 'tombo.inspect-proofs', input.taskId, { schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(proof.actual) });
+        const recorded = await insert(input.taskId, 'tombo.inspect-proofs', input.taskId, { schema: 1, inputDigest, sdkCommit: options.sdkCommit, actual: v.serialise(proof.actual), identity: operationIdentity, steps: [...inspectionSteps] });
         if (!recorded.ok) return recorded;
         const current = await options.store.snapshot(); if (!current.ok) return current;
         const existing = read(current.value, 'tombo.bindings', input.taskId);
@@ -94,9 +102,12 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     }));
   }
   async function ensurePending(update: PendingTomboUpdate): Promise<Result<JsonObject>> {
-    const value = { schema: 1, update: v.serialise(update), payloadHash: identity.digest(update.payload), updateDigest: identity.digest(v.serialise(update)), sdkCommit: options.sdkCommit };
+    const payloadHash = identity.digest(update.payload);
+    const updateDigest = identity.digest(v.serialise(update));
+    const operationIdentity = { executionId: update.executionId, taskId: update.taskId, updateDigest, payloadHash, sdkCommit: options.sdkCommit };
+    const value = { schema: 1, update: v.serialise(update), payloadHash, updateDigest, sdkCommit: options.sdkCommit, identity: operationIdentity, steps: [...pendingSteps] };
     return runOperation(options.store, identity, attempts, hooked({
-      name: 'tombo.pending', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Pending update already in flight',
+      name: 'tombo.pending', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Pending update already in flight', identity: operationIdentity, steps: pendingSteps,
       intent: s => read(s, 'tombo.pending', update.executionId) ?? null,
       same: stored => v.same(stored, value),
       proof: s => { const row = read(s, 'tombo.pending', update.executionId); return row && v.same(row, value) ? row : null; },
@@ -128,8 +139,9 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
   }
   async function deliver(update: PendingTomboUpdate): Promise<Result<v.Management>> {
     const saved = await ensurePending(update); if (!saved.ok) return saved;
+    const operationIdentity = { executionId: update.executionId, taskId: update.taskId, updateDigest: identity.digest(v.serialise(update)), sdkCommit: options.sdkCommit };
     return runOperation(options.store, identity, attempts, hooked({
-      name: 'tombo.receive', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Receive already in flight',
+      name: 'tombo.receive', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Receive already in flight', identity: operationIdentity, steps: receiveSteps,
       intent: s => read(s, 'tombo.pending', update.executionId) ?? null,
       same: stored => v.same(stored, saved.value),
       proof: () => null,
@@ -142,7 +154,7 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
         const reason = receiptProof(actual, update);
         if (reason) return unavailable(reason);
         const body = v.serialise(actual);
-        return v.record(body) ? ok(body) : unavailable('SDK receive result unavailable');
+        return v.record(body) ? ok({ ...body, identity: operationIdentity, steps: [...receiveSteps] }) : unavailable('SDK receive result unavailable');
       },
       async finish(_intent, proof) { return v.management(proof) ? ok(proof) : unavailable('SDK receive result unavailable'); },
     }));
@@ -156,13 +168,14 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     if (!v.update(update)) return invalid('Invalid reconciliation input');
     const saved = await ensurePending(update); if (!saved.ok) return saved;
     const updateDigest = identity.digest(v.serialise(update));
+    const operationIdentity = { executionId: update.executionId, taskId: update.taskId, updateDigest, sdkCommit: options.sdkCommit };
     const claim = { schema: 1, updateDigest };
     const unresolved = async (reason: string): Promise<Result<TomboReconciliation>> => {
       const r = await insert(update.taskId, 'tombo.reconciliation-events', identity.digest([update.executionId, reason]), { schema: 1, executionId: update.executionId, reason, updateDigest });
       return r.ok ? ok({ kind: 'pending', update: structuredClone(update), reason }) : r;
     };
     const result = await runOperation<TomboReconciliation>(options.store, identity, attempts, hooked({
-      name: 'tombo.apply', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Application already in flight',
+      name: 'tombo.apply', key: update.executionId, taskId: update.taskId, recover: 'rerun', pendingReason: 'Application already in flight', identity: operationIdentity, steps: applySteps,
       intent: s => read(s, 'tombo.apply-claims', update.executionId) ?? null,
       same: stored => stored.updateDigest === updateDigest,
       proof: s => {
@@ -189,12 +202,12 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
           if (!observation || !execution || execution.payloadHash !== identity.digest(observation)) return unavailable('Applied execution missing or payload hash differs');
           if (actual.state.pendingAssessmentExecutionIds?.includes(update.executionId) || actual.session.pendingUpdates.some(r => r.id === update.executionId)
             || receipt?.status !== 'applied' || !v.integer(receipt.appliedRevision) || receipt.appliedRevision > actual.state.revision || receipt.appliedRevision < update.expected.revision) return unavailable('Execution or receipt assessment remains pending');
-          return ok({ schema: 1, updateDigest, summary: v.serialise(summary(actual)) });
+          return ok({ schema: 1, updateDigest, summary: v.serialise(summary(actual)), identity: operationIdentity, steps: [...applySteps] });
         } catch (error) { return unavailable(`SDK reconciliation unknown: ${error instanceof Error ? error.message : 'host error'}`); }
       },
       async finish(_intent, proof) {
         if (!v.summary(proof.summary) || proof.updateDigest !== updateDigest) return unavailable('Invalid saved reconciliation');
-        const row = { schema: 1, updateDigest, summary: v.serialise(proof.summary) };
+        const row = { schema: 1, updateDigest, summary: v.serialise(proof.summary), identity: operationIdentity, steps: [...applySteps] };
         const written = await insert(update.taskId, 'tombo.reconciliation-results', update.executionId, row);
         if (!written.ok) {
           if (written.error.code !== 'id_collision') return written;

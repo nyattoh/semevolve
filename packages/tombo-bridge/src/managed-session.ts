@@ -5,10 +5,11 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { digestJson } from '@semevolve/core';
+import { digestJson, sameManifest } from '@semevolve/core';
 import type { JsonObject, JsonValue } from '@semevolve/core';
 import type { TomboInspectionInput } from './contracts/tombo.js';
-import type { ManagedSessionPort } from './runtime.js';
+import { inspectionSteps } from './runtime.js';
+import type { InspectionCompletion, ManagedSessionPort } from './runtime.js';
 import * as v from './validation.js';
 import { mapEvidence } from './mapping.js';
 import type { EvidenceMetadata } from './mapping.js';
@@ -33,6 +34,7 @@ export interface ManagedSessionOptions {
   readonly propose: (operation: 'inspect' | 'update', context: JsonValue) => JsonValue;
   readonly reflect?: (context: JsonValue) => JsonValue;
   readonly timeoutMs?: number;
+  readonly fault?: (step: 'activated' | 'prepared' | 'inspected') => Promise<void>;
 }
 export interface ManagedSessionRuntime extends ManagedSessionPort {
   invalidate(evidenceIds: readonly string[], reason: string): Promise<unknown>;
@@ -99,22 +101,41 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
     await writeFile(join(directory, path), JSON.stringify(data), { flag: 'wx' });
     return path;
   }
-  async function inspect(input: TomboInspectionInput): Promise<unknown> {
+  function inspectionCommitted(status: unknown): status is v.Management {
+    if (!v.management(status) || status.state.taskId !== taskId || status.session.binding.taskId !== taskId) return false;
+    if (status.session.pendingOperation !== null || status.session.accountingUncertain || status.state.revision < 1) return false;
+    return v.text((status.state as { readonly decision?: unknown }).decision);
+  }
+  async function inspect(input: TomboInspectionInput): Promise<InspectionCompletion> {
     if (input.taskId !== taskId) throw new Error('Task mismatch');
+    const retrieved = input.evidence.filter(item => item.content.kind === 'retrieved');
+    const unresolved = input.evidence.filter(item => item.content.kind !== 'retrieved');
+    const retrievedIds = retrieved.map(item => item.evidenceId);
+    const unresolvedIds = unresolved.map(item => item.evidenceId);
+    if (!sameManifest(retrievedIds, metadata.map(item => item.evidenceId))
+      || !sameManifest([...retrievedIds, ...unresolvedIds], input.evidence.map(item => item.evidenceId))) throw new Error('Inspection evidence does not match the expected manifest');
+    const presented = mapEvidence(input.evidence, metadata, readerId);
+    const presentedIds = presented.flatMap(item => v.record(item) && v.text(item.id) ? [item.id] : []);
+    if (presentedIds.length !== presented.length || !sameManifest(presentedIds, retrievedIds)) throw new Error('Inspection evidence does not match the expected manifest');
     const status = await command(['status'], true);
-    if (v.management(status) && status.state.taskId === input.taskId && status.session.binding.taskId === input.taskId) return status;
-    const packet = { ...packetBase, evidence: mapEvidence(input.evidence, metadata, readerId), proposedAnswer: JSON.stringify({ transmissionContract: input.transmissionContract, interpretation: input.interpretation, proposedAction: input.proposedAction, contextRevision: input.contextRevision,
-      unresolvedSources: input.evidence.filter(e => e.content.kind !== 'retrieved').map(e => ({ evidenceId: e.evidenceId, source: e.source, content: e.content })) }) };
+    if (inspectionCommitted(status)) return { actual: status, steps: [...inspectionSteps] };
+    const packet = { ...packetBase, evidence: presented, proposedAnswer: JSON.stringify({ transmissionContract: input.transmissionContract, interpretation: input.interpretation, proposedAction: input.proposedAction, contextRevision: input.contextRevision,
+      unresolvedSources: unresolved.map(item => ({ evidenceId: item.evidenceId, source: item.source, content: item.content })) }) };
     const taskPath = await saved('task', packet);
     if (status === null) {
       const clockPath = await saved('task-clock', clock);
       await command(['activate', '--input', taskPath, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json', '--task-clock', clockPath]);
+      await options.fault?.('activated');
     }
     const context = await command(['prepare', '--input', taskPath, '--ledger', '.session/sdk.jsonl']);
     if (!v.record(context) || !v.record(context.binding)) throw new Error('Preparation is blocked');
+    await options.fault?.('prepared');
     const proposal = options.propose('inspect', structuredClone(context));
     const proposalPath = await saved('proposal', { binding: context.binding, proposal });
-    return command(['inspect', '--input', taskPath, '--proposal', proposalPath, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json']);
+    const actual = await command(['inspect', '--input', taskPath, '--proposal', proposalPath, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json']);
+    await options.fault?.('inspected');
+    if (!inspectionCommitted(actual)) throw new Error('Inspection did not commit');
+    return { actual, steps: [...inspectionSteps] };
   }
   async function reflect(): Promise<unknown> {
     if (!options.reflect) return command(['status']);

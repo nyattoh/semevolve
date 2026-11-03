@@ -3,6 +3,7 @@ export type * from './contracts/message.js';
 export type * from './contracts/evidence.js';
 export type * from './contracts/task-store.js';
 export { canonicalJson, digestJson, hostIdentity, isUtcTimestamp } from './identity.js';
+export { completionProven, sameManifest } from './completion.js';
 export { operationSteps, runOperation } from './operation.js';
 export type { OperationEvent, OperationPrepared, OperationSpec, OperationStep, OperationWrite } from './operation.js';
 export { parseEnvelope } from './envelope.js';

@@ -9,6 +9,7 @@ export function update(reference) {
   const payload = { id: 'public-execution', source: { kind: 'tool', locator: 'public-synthetic-test' }, references: [], observations: [{ executionId: 'public-execution', probeId: 'public-probe', outcome: 'unavailable', evidence: [], toolCalls: 1, elapsedMs: 1, costYen: null }] };
   return { taskId: 'public-task', executionId: 'public-execution', expected: reference, inputDigest: hostIdentity.digest(payload), payload };
 }
+export function inspected(state) { return { actual: structuredClone(state), steps: ['activated', 'prepared', 'inspected'] }; }
 export function management() {
   return { mode: 'activated-session', session: { binding: { sessionId: 'public-session', taskId: 'public-task' }, updates: [], pendingUpdates: [], pendingOperation: null, accountingUncertain: false }, state: { taskId: 'public-task', revision: 1, task: { reflectionRequired: true }, gaps: [{ id: 'public-gap', importance: 'required', status: 'open' }], appliedExecutions: [], pendingAssessmentExecutionIds: [], stopReason: null, usage: { modelCalls: 1, costYen: null } }, understandingStatus: { requiredGapIds: ['public-gap'], reflectionStatus: 'missing', canReportCompletion: false }, sessionStopReason: null };
 }
@@ -16,7 +17,7 @@ export function fixture(options = {}) {
   const state = management();
   const calls = { receive: 0, apply: 0 };
   const session = {
-    async inspect() { return structuredClone(state); }, async status() { return structuredClone(state); },
+    async inspect() { return inspected(state); }, async status() { return structuredClone(state); },
     async receive(req) {
       calls.receive++;
       const receipt = { ...structuredClone(req.payload), payloadHash: hostIdentity.digest(req.payload), status: 'received_unassessed', appliedRevision: null };
