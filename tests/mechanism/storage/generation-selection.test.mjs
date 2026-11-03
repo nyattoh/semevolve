@@ -41,6 +41,31 @@ test('B1 a restored generation and the retired target both retain new writes', a
   assert.deepEqual(take(await f.runtime.retrieve({ all: true }, mapping())), restored);
 });
 
+test('B1 a retired head is read from its own generation after the other side gains an original', async t => {
+  const f = await migrationFixture(); t.after(() => f.store.close());
+  await f.append('host.originals', 'message-2', original('message-2'));
+  take(await f.runtime.recordOriginal('message-2'));
+  await checkedMigration(f);
+  take(await f.runtime.migration.switch({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }));
+  assert.deepEqual(take(await f.runtime.retrieve({ all: true }, targetMapping)).map(u => u.source.messageId).sort(), ['message-1', 'message-2']);
+  const retired = take(await f.runtime.retrieve({ all: true }, mapping()));
+  assert.deepEqual(retired.map(u => u.source.messageId), ['message-1']);
+  assert.ok(retired.every(u => u.versions.storageVersionId === mapping().versions.storageVersionId));
+});
+
+test('B1 a generation retired by restore is read from its own generation after the dataset grows', async t => {
+  const f = await migrationFixture(); t.after(() => f.store.close());
+  await checkedMigration(f);
+  take(await f.runtime.migration.switch({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }));
+  await f.append('host.originals', 'message-2', original('message-2'));
+  take(await f.runtime.recordOriginal('message-2'));
+  take(await f.runtime.migration.restore({ migrationId: 'migration-1', expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-restore' }));
+  assert.deepEqual(take(await f.runtime.retrieve({ all: true }, mapping())).map(u => u.source.messageId).sort(), ['message-1', 'message-2']);
+  const retired = take(await f.runtime.retrieve({ all: true }, targetMapping));
+  assert.deepEqual(retired.map(u => u.source.messageId), ['message-1']);
+  assert.ok(retired.every(u => u.versions.storageVersionId === targetMapping.versions.storageVersionId));
+});
+
 test('B1 failed and pending projections never replace the latest successful generation', async t => {
   const f = await migrationFixture(); t.after(() => f.store.close());
   await generations(f);

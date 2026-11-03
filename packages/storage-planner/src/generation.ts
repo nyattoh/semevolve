@@ -9,11 +9,28 @@ interface Candidate {
   generation: string;
   revision: number;
   receipt: Record<string, unknown>;
-  projectedMapping: Mapping;
+  mapping: Mapping;
+}
+
+async function retiredEvidence(p: Planner, s: StoreSnapshot, candidate: Candidate): Promise<readonly OriginalInput[]> {
+  const { mapping, generation } = candidate;
+  const units = p.projection(s, generation, mapping);
+  if (units.length === 0) return v.unavailable('Retired generation has no stored units');
+  const manifest = v.find(s, 'storage.manifests', generation);
+  if (manifest !== undefined) {
+    if (!v.object(manifest) || manifest.generation !== generation || manifest.mappingDigest !== digestJson(mapping)) return v.unavailable('Retired generation manifest is inconsistent');
+    const originalIds = manifest.originalIds;
+    const checkIds = manifest.checkIds;
+    if (!v.unique(originalIds) || !v.unique(checkIds) || checkIds.length === 0) return v.unavailable('Retired generation manifest is inconsistent');
+    const covered = units.filter(u => originalIds.includes(u.source.messageId));
+    if (v.manifestUnitDigest(covered) !== manifest.unitDigest) return v.unavailable('Retired generation projection is incomplete');
+  }
+  const ids = [...new Set(units.map(u => u.source.messageId))].sort();
+  return Promise.all(ids.map(id => p.original(s, id as OriginalInput['message']['envelope']['message_id'])));
 }
 
 async function projectionEvidence(p: Planner, s: StoreSnapshot, candidate: Candidate): Promise<readonly OriginalInput[]> {
-  const { receipt, projectedMapping: mapping } = candidate;
+  const { receipt, mapping } = candidate;
   const manifest = v.find(s, 'storage.manifests', String(receipt.generation));
   if (!v.object(manifest) || manifest.generation !== receipt.generation || manifest.mappingDigest !== digestJson(mapping)
     || manifest.datasetDigest !== receipt.datasetDigest || !v.unique(manifest.originalIds) || !v.unique(manifest.checkIds)
@@ -81,9 +98,11 @@ export async function confirmedGeneration(p: Planner, s: StoreSnapshot, mapping:
       if (receipt.operation === 'restore' && !s.events.some(e => e.kind === 'storage.restore.intent' && e.taskId === p.options.taskId
         && v.object(e.data) && e.data.intent === receipt.executionId && e.data.migrationId === receipt.migrationId
         && v.same(e.data.head, source))) return v.unavailable('Restoration source head history is inconsistent');
-      candidates.push({ generation: source.generation, revision: receipt.revision, receipt, projectedMapping });
+      const retiredMapping = receipt.operation === 'restore' ? state.targetMapping : state.sourceMapping;
+      if (source.mappingDigest !== digestJson(retiredMapping)) return v.unavailable('Retired generation mapping is unavailable');
+      candidates.push({ generation: source.generation, revision: receipt.revision, receipt, mapping: retiredMapping });
     }
-    if (projects) candidates.push({ generation: receipt.generation, revision: receipt.revision, receipt, projectedMapping });
+    if (projects) candidates.push({ generation: receipt.generation, revision: receipt.revision, receipt, mapping: projectedMapping });
   }
   for (const manifest of v.rows(s, 'storage.manifests')) {
     if (v.object(manifest) && manifest.mappingDigest === mappingDigest
@@ -93,7 +112,7 @@ export async function confirmedGeneration(p: Planner, s: StoreSnapshot, mapping:
   const latest = candidates.filter(c => c.revision === revision);
   if (!latest.length || new Set(latest.map(c => c.generation)).size !== 1) return v.unavailable('Confirmed projection generation is unavailable or ambiguous');
   for (const candidate of latest) {
-    const originals = await projectionEvidence(p, s, candidate);
+    const originals = candidate.generation === String(candidate.receipt.generation) ? await projectionEvidence(p, s, candidate) : await retiredEvidence(p, s, candidate);
     const units = p.projection(s, candidate.generation, mapping);
     if (!v.same([...new Set(units.map(u => u.source.messageId))].sort(), originals.map(o => o.message.envelope.message_id).sort())
       || units.some(u => {
