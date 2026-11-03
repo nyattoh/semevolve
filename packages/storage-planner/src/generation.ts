@@ -34,7 +34,7 @@ async function projectionEvidence(p: Planner, s: StoreSnapshot, candidate: Candi
   const manifest = v.find(s, 'storage.manifests', String(receipt.generation));
   if (!v.object(manifest) || manifest.generation !== receipt.generation || manifest.mappingDigest !== digestJson(mapping)
     || manifest.datasetDigest !== receipt.datasetDigest || !v.unique(manifest.originalIds) || !v.unique(manifest.checkIds)
-    || manifest.checkIds.length !== p.options.comparison.queries.length || manifest.checkIds.length === 0
+    || manifest.checkIds.length === 0
     || !v.integer(manifest.throughRevision) || manifest.throughRevision >= candidate.revision) return v.unavailable('Confirmed generation manifest is inconsistent');
   const originalIds = manifest.originalIds;
   const originals = await Promise.all(originalIds.map(id => p.original(s, id as OriginalInput['message']['envelope']['message_id'])));
@@ -47,11 +47,10 @@ async function projectionEvidence(p: Planner, s: StoreSnapshot, candidate: Candi
     const c = v.find(s, 'storage.inspections', id);
     if (!v.object(c) || c.checkId !== id || !v.object(c.request) || !v.object(c.result)
       || c.mappingDigest !== digestJson(mapping) || c.originalSetDigest !== digestJson(originals)
-      || c.querySetDigest !== digestJson(p.options.comparison.queries)) return v.unavailable('Confirmed generation inspection is inconsistent');
+      || !v.digest(c.querySetDigest)) return v.unavailable('Confirmed generation inspection is inconsistent');
     const { request, result } = c;
     if (request.taskId !== p.options.taskId || request.scope !== p.options.scope
-      || request.criteriaDigest !== p.options.comparison.criteriaDigest || request.evaluatorVersion !== p.options.comparison.evaluatorVersion
-      || !v.same(request.expectedConditions, p.options.comparison.expectedConditions)
+      || !v.digest(request.criteriaDigest) || !v.text(request.evaluatorVersion)
       || !v.same(request.original, { originals, versions: mapping.versions, mappingDigest: digestJson(mapping) })
       || !v.object(request.retrieved) || !Array.isArray(request.retrieved.units)
       || request.inputDigest !== digestJson({ original: request.original, retrieved: request.retrieved, expectedConditions: request.expectedConditions,
@@ -63,7 +62,10 @@ async function projectionEvidence(p: Planner, s: StoreSnapshot, candidate: Candi
     if (v.manifestUnitDigest(selected) !== v.manifestUnitDigest(request.retrieved.units as unknown as Parameters<typeof v.manifestUnitDigest>[0])) return v.unavailable('Confirmed generation retrieval differs from inspection');
     queries.push(request.retrieved.query);
   }
-  if (!v.same(queries, p.options.comparison.queries)) return v.unavailable('Confirmed generation query coverage changed');
+  if (queries.length === 0 || manifest.checkIds.some(id => {
+    const check = v.find(s, 'storage.inspections', id);
+    return !v.object(check) || check.querySetDigest !== digestJson(queries);
+  })) return v.unavailable('Confirmed generation query coverage changed');
   return originals;
 }
 

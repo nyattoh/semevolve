@@ -226,11 +226,12 @@ export class Planner {
   async verified(s: StoreSnapshot, mapping: Mapping): Promise<void> {
     await this.registered(s, mapping);
     const ids = this.options.comparison.originalIds;
-    const inspectionPlanDigest = !this.options.inspectionEligibility && Array.isArray(ids) && ids.length > 0
-      ? this.inspectionPlanDigest(await Promise.all(ids.map(id => this.original(s, id)))) : undefined;
+    const originals = Array.isArray(ids) && ids.length > 0 ? await Promise.all(ids.map(id => this.original(s, id))) : [];
+    const inspectionPlanDigest = originals.length > 0 ? this.inspectionPlanDigest(originals) : undefined;
+    const originalSetDigest = originals.length > 0 ? digestJson(originals) : undefined;
     const found = v.rows(s, 'storage.conformance').some(c => {
       if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest || c.evaluatorVersion !== this.options.comparison.evaluatorVersion) return false;
-      if (!this.options.inspectionEligibility && (!v.digest(inspectionPlanDigest) || c.inspectionPlanDigest !== inspectionPlanDigest)) return false;
+      if (!v.digest(inspectionPlanDigest) || c.inspectionPlanDigest !== inspectionPlanDigest) return false;
       return true;
     });
     if (!found) v.unavailable('Unverified language/rule/storage combination');
@@ -253,12 +254,14 @@ export class Planner {
       }
       for (const c of v.rows(s, 'storage.conformance')) {
         if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest
-          || c.evaluatorVersion !== this.options.comparison.evaluatorVersion || !v.unique(c.ids) || !c.ids.length) continue;
+          || c.evaluatorVersion !== this.options.comparison.evaluatorVersion || c.inspectionPlanDigest !== inspectionPlanDigest
+          || !v.unique(c.ids) || !c.ids.length) continue;
         let current = true;
         for (const id of c.ids) {
           const check = v.find(s, 'storage.inspections', id);
           if (!v.object(check) || check.checkId !== id || !v.object(check.request) || !v.object(check.result) || check.mappingDigest !== digestJson(mapping)
             || check.request.taskId !== this.options.taskId || check.request.scope !== this.options.scope
+            || check.originalSetDigest !== originalSetDigest
             || check.querySetDigest !== digestJson(this.options.comparison.queries) || !v.same(check.request.expectedConditions, this.options.comparison.expectedConditions)
             || check.request.criteriaDigest !== this.options.comparison.criteriaDigest || check.request.evaluatorVersion !== this.options.comparison.evaluatorVersion) { current = false; break; }
           if (!await this.inspectionCurrent(s, check as unknown as StorageInspection) || !this.passing(check.result as unknown as StorageCheckResult)) current = false;

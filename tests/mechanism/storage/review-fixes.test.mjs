@@ -290,6 +290,36 @@ test('canonical eligibility recovers store after a stale conformance record', as
   await f.store.close();
 });
 
+test('canonical conformance does not authorise an original set it did not inspect', async () => {
+  const f = await recordingFixture();
+  await f.certify();
+  take(await f.runtime.store('message-1', mapping()));
+  await f.append('host.originals', 'message-2', original('message-2'));
+  const expanded = createStoragePlanner({ ...f.options, comparison: { ...f.options.comparison, originalIds: ['message-1', 'message-2'] } });
+  reject(await expanded.store('message-2', mapping()), 'unavailable');
+  reject(await expanded.retrieve({ all: true }, mapping()), 'unavailable');
+  const checks = take(await expanded.inspectMapping(mapping()));
+  take(await expanded.recordConformance(mapping(), checks.map(c => c.checkId)));
+  assert.deepEqual(take(await expanded.store('message-2', mapping())).map(unit => unit.source.messageId), ['message-2']);
+  await f.store.close();
+});
+
+for (const field of ['criteriaDigest', 'evaluatorVersion', 'expectedConditions', 'queries']) test(`finalized shadow stays readable after a ${field} upgrade once current conformance is recorded`, async () => {
+  const f = await migrationFixture();
+  const prepared = take(await f.runtime.migration.prepare(await migrationRequest(f)));
+  take(await f.runtime.migration.catchUp(prepared.migrationId, (await f.snapshot()).revision));
+  const comparison = { ...f.options.comparison };
+  if (field === 'criteriaDigest') comparison.criteriaDigest = digestJson('storage-criteria-v2');
+  if (field === 'evaluatorVersion') comparison.evaluatorVersion = 'synthetic-double-v2';
+  if (field === 'expectedConditions') comparison.expectedConditions = { ...f.options.comparison.expectedConditions, revision: 2 };
+  if (field === 'queries') comparison.queries = [{ messageId: 'message-1' }];
+  const upgraded = createStoragePlanner({ ...f.options, comparison });
+  const checks = take(await upgraded.inspectMapping(targetMapping));
+  take(await upgraded.recordConformance(targetMapping, checks.map(c => c.checkId)));
+  assert.deepEqual(take(await upgraded.retrieve({ all: true }, targetMapping)).map(unit => unit.source.messageId), ['message-1']);
+  await f.store.close();
+});
+
 test('a live generation manifest does not block certification under a new query plan', async () => {
   const f = await recordingFixture();
   await f.certify();
