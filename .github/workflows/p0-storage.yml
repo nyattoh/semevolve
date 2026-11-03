@@ -1,0 +1,70 @@
+name: P0 storage planner
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  storage:
+    name: Storage (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm install --global npm@10.9.4 --ignore-scripts --no-audit --no-fund
+      - run: node --version
+      - run: npm --version
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm run test --workspace=@semevolve/language-registry
+      - run: npm run test:persistence --workspace=@semevolve/language-registry
+      - run: npm run test:mechanism --workspace=@semevolve/policy
+      - run: npm run test:persistence --workspace=@semevolve/policy
+      - run: node node_modules/typescript/bin/tsc -p tests/mechanism/policy/tsconfig.json
+      - name: Policy mutations restore generated output
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { spawnSync } from 'node:child_process';
+          const digest = () => createHash('sha256').update(readFileSync('packages/policy/dist/runtime.js')).digest('hex');
+          const before = digest();
+          const result = spawnSync(process.execPath, ['tests/mechanism/policy/mutations.mjs'], { stdio: 'inherit' });
+          assert.equal(digest(), before, 'Policy mutation must restore dist');
+          assert.equal(result.status, 0);
+          NODE
+      - run: npm run test:local --workspace=@semevolve/transport-adapters
+      - run: npm run test:durable --workspace=@semevolve/transport-adapters
+      - run: npm run test:contracts
+      - run: npm run test:core
+      - run: npm run test:persistence
+      - run: npm run test:core-consumers
+      - run: npm run check:acceptance
+      - run: npm run check:public-artifacts
+      - run: node -p "JSON.stringify({node:process.version,os:process.platform,execPath:process.execPath,head:process.env.GITHUB_SHA})"
+      - run: node --test --test-reporter=tap tests/integration/j1/partition.test.mjs
+      - run: node --test tests/integration/j1/composition.test.mjs
+      - run: node --test tests/integration/j1/restart.test.mjs
+      - run: node --test tests/integration/j1/detection.test.mjs
+
+      - run: npm run test:consumers --workspace=@semevolve/storage-planner
+      - run: npm run test:mechanism --workspace=@semevolve/storage-planner
+      - run: npm run test:persistence --workspace=@semevolve/storage-planner

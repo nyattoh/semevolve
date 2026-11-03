@@ -11,6 +11,9 @@
   "references": [
     {
       "path": "../../packages/core"
-    }
+    },
+    { "path": "../evaluator" },
+    { "path": "../language-registry" },
+    { "path": "../policy" }
   ]
 }

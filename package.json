@@ -5,7 +5,7 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "packageManager": "npm@10.9.4",
   "workspaces": [
@@ -30,6 +30,8 @@
     "check:acceptance": "node scripts/check-acceptance.mjs",
     "check:public-artifacts": "node scripts/check-public-artifacts.mjs",
     "start:cli": "node apps/cli/dist/index.js",
+    "start:hub": "node apps/cli/dist/hub-cli.js",
+    "test:m0": "npm run build && node --test --test-reporter=tap tests/integration/m0/*.test.mjs",
     "start:local-ui": "node apps/local-ui/dist/index.js"
   },
   "devDependencies": {
