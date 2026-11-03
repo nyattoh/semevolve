@@ -176,9 +176,10 @@ export class Planner {
     }
     return checks;
   }
-  inspectionPlanDigest(): string {
+  inspectionPlanDigest(originals: readonly OriginalInput[]): string {
     const plan = this.options.comparison;
-    return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions });
+    if (!Array.isArray(plan.originalIds) || plan.originalIds.length === 0 || originals.length === 0) v.invalid('Inspection plan requires at least one original');
+    return digestJson({ queries: plan.queries, expectedConditions: plan.expectedConditions, originalIds: plan.originalIds, originalSetDigest: digestJson(originals) });
   }
   async inspectMapping(input: Mapping): Promise<readonly StorageInspection[]> {
     const mapping = structuredClone(input);
@@ -217,16 +218,18 @@ export class Planner {
       checks.push(c as unknown as StorageInspection);
     }
     const final = inputState ? await this.revalidateInspection(inputState, checks) : s;
-    const conformanceRecord = { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion, inspectionPlanDigest: this.inspectionPlanDigest() };
+    const conformanceRecord = { mappingDigest: digestJson(mapping), ids, criteriaDigest: this.options.comparison.criteriaDigest, evaluatorVersion: this.options.comparison.evaluatorVersion, inspectionPlanDigest: this.inspectionPlanDigest(originals) };
     await this.immutable(final, 'storage.conformance', digestJson([mapping, ids]), conformanceRecord);
   }
   passing(result: StorageCheckResult): boolean { return result.literalRestoration === 'pass' && result.meaningPreservation === 'pass' && result.retrievalCorrectness === 'pass'; }
   async verified(s: StoreSnapshot, mapping: Mapping): Promise<void> {
     await this.registered(s, mapping);
-    const inspectionPlanDigest = this.inspectionPlanDigest();
+    const ids = this.options.comparison.originalIds;
+    const inspectionPlanDigest = !this.options.inspectionEligibility && Array.isArray(ids) && ids.length > 0
+      ? this.inspectionPlanDigest(await Promise.all(ids.map(id => this.original(s, id)))) : undefined;
     const found = v.rows(s, 'storage.conformance').some(c => {
       if (!v.object(c) || c.mappingDigest !== digestJson(mapping) || c.criteriaDigest !== this.options.comparison.criteriaDigest || c.evaluatorVersion !== this.options.comparison.evaluatorVersion) return false;
-      if (!this.options.inspectionEligibility && c.inspectionPlanDigest !== inspectionPlanDigest) return false;
+      if (!this.options.inspectionEligibility && (!v.digest(inspectionPlanDigest) || c.inspectionPlanDigest !== inspectionPlanDigest)) return false;
       return true;
     });
     if (!found) v.unavailable('Unverified language/rule/storage combination');

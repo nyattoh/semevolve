@@ -123,7 +123,7 @@ test('L3 verified finds the current conformance among multiple records', async (
   await f.store.close();
 });
 
-const planDigest = comparison => digestJson({ queries: comparison.queries, expectedConditions: comparison.expectedConditions });
+const planDigest = (comparison, originals) => digestJson({ queries: comparison.queries, expectedConditions: comparison.expectedConditions, originalIds: comparison.originalIds, originalSetDigest: digestJson(originals) });
 
 test('empty original set cannot certify a mapping or authorise store', async () => {
   const f = await fixture({ adapters: syntheticStorageAdapters(), evaluator: evaluationDouble(), plan: { originalIds: [], queries: [{ all: true }], expectedConditions: { payloads: {} } } });
@@ -168,6 +168,27 @@ test('compare rejects an empty original set instead of selecting a vacuous pass'
   await f.store.close();
 });
 
+test('standalone conformance does not authorise a different inspected original set', async () => {
+  const f = await fixture({ adapters: syntheticStorageAdapters(), evaluator: evaluationDouble(), plan, seed: true });
+  f.options.inspectionEligibility = undefined;
+  const runtime1 = createStoragePlanner(f.options);
+  await f.versions();
+  const checks = take(await runtime1.inspectMapping(mapping()));
+  take(await runtime1.recordConformance(mapping(), checks.map(c => c.checkId)));
+  take(await runtime1.store('message-1', mapping()));
+  await f.append('host.originals', 'message-2', original('message-2'));
+  const otherIds = createStoragePlanner({ ...f.options, comparison: { ...f.options.comparison, originalIds: ['message-1', 'message-2'] } });
+  reject(await otherIds.store('message-1', mapping()), 'unavailable');
+  reject(await otherIds.retrieve({ all: true }, mapping()), 'unavailable');
+  const altered = original('message-1', { ...clausePayload, clauses: [] });
+  const otherContent = createStoragePlanner({ ...f.options, references: { ...f.options.references, async readOriginal(s, id) {
+    if (id === 'message-1') return { ok: true, value: altered };
+    return f.options.references.readOriginal(s, id);
+  } } });
+  reject(await otherContent.retrieve({ all: true }, mapping()), 'unavailable');
+  await f.store.close();
+});
+
 test('digest-less conformance does not authorise standalone store', async () => {
   const f = await fixture({ adapters: syntheticStorageAdapters(), evaluator: evaluationDouble(), plan });
   await f.versions();
@@ -182,7 +203,7 @@ test('shadow conformance stays bound to the inspection plan that produced it', a
   const prepared = take(await f.runtime.migration.prepare(await migrationRequest(f)));
   take(await f.runtime.migration.catchUp(prepared.migrationId, (await f.snapshot()).revision));
   take(await f.runtime.migration.switch({ migrationId: prepared.migrationId, expectedRevision: (await f.snapshot()).revision, authorisationRef: 'grant-switch' }));
-  const bound = planDigest(f.options.comparison);
+  const bound = planDigest(f.options.comparison, [original()]);
   const targetDigest = digestJson(targetMapping);
   const targetRows = rows(await f.snapshot(), 'storage.conformance').filter(row => row.mappingDigest === targetDigest);
   assert.ok(targetRows.length > 1);
