@@ -147,7 +147,7 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
     return result;
   }
   return { inspect, receive, apply, reflect,
-    async status(requestedTaskId) { if (requestedTaskId !== taskId) throw new Error('Task mismatch'); return command(['status']); },
+    async status(requestedTaskId) { if (requestedTaskId !== taskId) throw new Error('Task mismatch'); return command(['status'], true); },
     async invalidate(evidenceIds, reason) {
       const path = await saved('invalidation', { evidenceIds: [...evidenceIds], reason });
       return command(['invalidate', '--state', '.session/state.json', '--input', path, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json']);

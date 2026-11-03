@@ -78,6 +78,90 @@ test('concurrent inspect returns the saved summary instead of colliding on retri
   assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 1);
 });
 
+test('inspect creates the session on retry when the claim survived but activation never happened', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const inspection = input();
+  let activations = 0;
+  f.session.inspect = async () => {
+    activations += 1;
+    if (activations === 1) throw new Error('crash before session creation');
+    return structuredClone(f.state);
+  };
+  f.session.status = async () => null;
+  const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit });
+  const first = await bridge.inspect(inspection);
+  assert.equal(first.ok, false);
+  assert.equal(first.error.code, 'unavailable');
+  const second = await bridge.inspect(structuredClone(inspection));
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.value.reference.sessionRef, 'public-session');
+  assert.equal(activations, 2);
+  assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 1);
+});
+
+test('inspect does not activate when status fails after a session may already exist', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const inspection = input();
+  let activations = 0;
+  f.session.inspect = async () => { activations += 1; throw new Error('crash before session creation'); };
+  f.session.status = async () => { throw new Error('temporary helper outage'); };
+  const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit });
+  const first = await bridge.inspect(inspection);
+  assert.equal(first.ok, false);
+  const second = await bridge.inspect(structuredClone(inspection));
+  assert.equal(second.ok, false);
+  assert.equal(second.error.code, 'unavailable');
+  assert.match(second.error.reason, /temporary helper outage/);
+  assert.equal(activations, 1);
+  assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 0);
+});
+
+test('inspect binds an existing session instead of activating another one', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const inspection = input();
+  let bindings = 0;
+  const store = {
+    snapshot: () => f.store.snapshot(),
+    async transact(batch) {
+      if (batch.mutations.some(mutation => mutation.entry.key.collection === 'tombo.bindings') && bindings++ === 0) return { ok: false, error: { code: 'unavailable', reason: 'binding write failed' } };
+      return f.store.transact(batch);
+    },
+    close: () => f.store.close(),
+  };
+  let activations = 0;
+  f.session.inspect = async () => { activations += 1; return structuredClone(f.state); };
+  const bridge = createTomboBridge({ store, session: f.session, sdkCommit: commit });
+  const first = await bridge.inspect(inspection);
+  assert.equal(first.ok, false);
+  assert.equal(first.error.code, 'unavailable');
+  const second = await bridge.inspect(structuredClone(inspection));
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(activations, 1);
+  assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 1);
+});
+
+test('reconcile calls apply again when the claim survived but the SDK never applied the execution', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const req = update(value(await f.bridge.inspect(input())).reference);
+  value(await f.bridge.receive(req));
+  const original = f.session.apply;
+  let applies = 0;
+  f.session.apply = async update => {
+    applies += 1;
+    if (applies === 1) throw new Error('helper failed before mutation');
+    return original(update);
+  };
+  const first = value(await f.bridge.reconcile(req));
+  assert.equal(first.kind, 'pending');
+  assert.match(first.reason, /helper failed before mutation/);
+  const second = value(await f.bridge.reconcile(req));
+  assert.equal(second.kind, 'reconciled');
+  assert.equal(applies, 2);
+  assert.equal(f.state.state.appliedExecutions.length, 1);
+  assert.equal(value(await f.bridge.reconcile(req)).kind, 'reconciled');
+  assert.equal(applies, 2);
+});
+
 test('concurrent reconciliation claims SDK application once and preserves an unknown outcome', { timeout: 30000 }, async () => {
   const f = fixture({ maxAttempts: 64 });
   const req = update(value(await f.bridge.inspect(input())).reference);

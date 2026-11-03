@@ -53,7 +53,21 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     const s = await options.store.snapshot(); if (!s.ok) return s;
     const old = read(s.value, 'tombo.bindings', input.taskId);
     if (old) return v.summary(old.summary) && old.inputDigest === inputDigest ? ok(structuredClone(old.summary)) : unavailable('Invalid TOMBO binding');
-    const actual = claim.value ? await options.session.inspect(input) : await options.session.status(input.taskId);
+    const claims = flight(options.store);
+    const activation = `inspect:${input.taskId}`;
+    let actual: unknown;
+    if (!claim.value) {
+      actual = await options.session.status(input.taskId);
+      if (actual === null) {
+        if (claims.has(activation)) return unavailable('Inspect already in flight');
+      } else if (!v.management(actual)) return unavailable('SDK inspection state or session unavailable');
+    }
+    if (claim.value || actual === null) {
+      if (claims.has(activation)) return unavailable('Inspect already in flight');
+      claims.add(activation);
+      try { actual = await options.session.inspect(input); }
+      finally { claims.delete(activation); }
+    }
     if (!v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
     const result = summary(actual);
     const saved = await insert(input.taskId, 'tombo.bindings', input.taskId, { schema: 1, sdkCommit: options.sdkCommit, inputDigest, sessionRef: result.reference.sessionRef, summary: v.serialise(result) });
@@ -120,11 +134,16 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
       const before = receiptProof(actual, update); if (before) return unresolved(before);
       const applied = actual.state.appliedExecutions.some(e => e.executionId === update.executionId);
       if (!applied) {
-        const claim = await insert(update.taskId, 'tombo.apply-claims', update.executionId, { schema: 1, updateDigest: identity.digest(v.serialise(update)) });
-        if (!claim.ok) return claim;
-        if (!claim.value) return unresolved('Application already claimed; reconcile the SDK authority without repeating it');
-        actual = await options.session.apply(update);
-        await options.boundary?.('sdk_updated', update);
+        const claims = flight(options.store);
+        const application = `apply:${update.executionId}`;
+        if (claims.has(application)) return unresolved('Application already in flight');
+        claims.add(application);
+        try {
+          const claim = await insert(update.taskId, 'tombo.apply-claims', update.executionId, { schema: 1, updateDigest: identity.digest(v.serialise(update)) });
+          if (!claim.ok) return claim;
+          actual = await options.session.apply(update);
+          await options.boundary?.('sdk_updated', update);
+        } finally { claims.delete(application); }
       }
       if (!v.management(actual)) return unresolved('SDK update result unavailable');
       const after = receiptProof(actual, update); if (after) return unresolved(after);
@@ -150,6 +169,12 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
   return { inspect: boundary(inspect), receive: boundary(receive), reconcile: boundary(reconcile) };
 }
 
+const inFlight = new WeakMap<TaskStore, Set<string>>();
+function flight(store: TaskStore): Set<string> {
+  let claims = inFlight.get(store);
+  if (!claims) { claims = new Set(); inFlight.set(store, claims); }
+  return claims;
+}
 const ok = <T>(value: T): Result<T> => ({ ok: true, value });
 const invalid = <T>(issue: string): Result<T> => ({ ok: false, error: { code: 'invalid_input', issues: [issue] } });
 const unavailable = <T>(reason: string): Result<T> => ({ ok: false, error: { code: 'unavailable', reason } });
