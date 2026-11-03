@@ -1,0 +1,17 @@
+{
+  "classification": "public_synthetic_example",
+  "limitation": "Finite mechanism fixtures. No natural-language parser, model capability, hidden evaluation or production performance evidence.",
+  "expressions": [
+    {
+      "kind": "clause_sequence",
+      "literal": "AはBを変更しない。Cなら検査する。原因は不明。",
+      "clauses": [{ "id": "negative", "negation": true, "condition": "C", "uncertainty": "unknown", "reference": "B", "time": "before" }]
+    },
+    {
+      "kind": "directed_graph",
+      "literal": "AからBへの関係は未確定。候補は複数ある。",
+      "nodes": ["A", "B"],
+      "edges": [{ "id": "edge", "from": "A", "to": "B", "candidates": ["A", "B"], "uncertainty": "unknown" }]
+    }
+  ]
+}
