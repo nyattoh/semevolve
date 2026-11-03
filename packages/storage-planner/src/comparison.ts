@@ -48,13 +48,14 @@ export async function compare(p: Planner, left: StorageProposal, right: StorageP
     const units = await p.project(s, proposal.mapping, originals);
     const writeElapsedMs = plan.measurement.now() - begin;
     const queryElapsedMs = [];
+    const retrieved = [];
     for (const query of plan.queries) {
       const start = plan.measurement.now();
-      v.value(await p.adapter(s, proposal.mapping).retrieve(structuredClone(query), structuredClone(units), structuredClone(proposal.mapping)));
+      retrieved.push(v.value(await p.adapter(s, proposal.mapping).retrieve(structuredClone(query), structuredClone(units), structuredClone(proposal.mapping))));
       queryElapsedMs.push(plan.measurement.now() - start);
     }
     if (![writeElapsedMs, ...queryElapsedMs].every(n => Number.isFinite(n) && n >= 0)) v.invalid('Invalid measurement clock');
-    const checks = await p.inspect(s, proposal.mapping, originals, units);
+    const checks = await p.inspect(s, proposal.mapping, originals, units, retrieved);
     inspections.push(...checks); checkRefs.push(...checks.map(c => c.checkId));
     measurements[proposal.proposalId] = { meaningPreservation: verdict(checks.map(c => c.result.meaningPreservation)), retrievalCorrectness: verdict(checks.map(c => c.result.retrievalCorrectness)),
       falseRetrievals: null, missedRetrievals: null, queryElapsedMs, writeElapsedMs: [writeElapsedMs], dataBytes: Buffer.byteLength(canonicalJson(units), 'utf8'), indexBytes: null,

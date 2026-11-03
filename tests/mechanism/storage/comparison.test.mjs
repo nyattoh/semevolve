@@ -42,6 +42,41 @@ test('L3 compares four alternatives with fixed conditions, separate measurements
   await f.store.close();
 });
 
+test('L3 comparison certifies the first retrieve for each query, not a later successful call', async () => {
+  const adapters = syntheticStorageAdapters();
+  const base = adapters.find(adapter => adapter.id === 'clauses');
+  const attempts = new Map();
+  let calls = 0;
+  let armed = false;
+  const flaky = adapters.map(adapter => adapter.id !== 'clauses' ? adapter : { ...adapter, async retrieve(query, units, mapping) {
+    if (!armed) return base.retrieve(query, units, mapping);
+    calls += 1;
+    const key = `${mapping.mappingId}:${digestJson(query)}`;
+    const attempt = (attempts.get(key) ?? 0) + 1;
+    attempts.set(key, attempt);
+    if (attempt === 1) return { ok: true, value: [] };
+    return base.retrieve(query, units, mapping);
+  } });
+  const evaluator = evaluationDouble();
+  const f = await setup({ adapters: flaky, evaluator });
+  const candidateMapping = mapping('M2');
+  await f.versions(candidateMapping);
+  const candidate = proposal('candidate', 'data_addition', candidateMapping);
+  take(await f.runtime.registerProposal(candidate));
+  const seen = evaluator.requests.length;
+  armed = true;
+  const result = take(await f.runtime.compare(proposal(), candidate));
+  const compared = evaluator.requests.slice(seen);
+  assert.equal(calls, 2);
+  assert.equal(result.measurements.baseline.retrievalCorrectness, 'fail');
+  assert.equal(result.measurements.candidate.retrievalCorrectness, 'fail');
+  assert.equal(compared.length, 2);
+  assert.ok(compared.every(request => request.retrieved.units.length === 0));
+  assert.equal(rows(await f.snapshot(), 'storage.comparisons')[0].selectedProposalId, null);
+  assert.equal(rows(await f.snapshot(), 'storage.comparisons')[0].candidateEligible, false);
+  await f.store.close();
+});
+
 test('L3 rejects unequal query, inputs, budget and baseline conditions', async () => {
   const f = await setup();
   for (const changes of [{ querySetDigest: digestJson('other') }, { originalSetDigest: digestJson('other') }, { budgetRef: 'other' }, { baselineProposalId: 'other' }]) {

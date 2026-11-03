@@ -150,22 +150,25 @@ export class Planner {
     if (observed.revision !== final.revision) throw new v.Refusal({ code: 'revision_conflict', expected: final.revision, actual: observed.revision });
     return final;
   }
-  async inspect(s: StoreSnapshot, mapping: Mapping, originals: readonly OriginalInput[], units: readonly DerivedUnit[]): Promise<readonly StorageInspection[]> {
+  async inspect(s: StoreSnapshot, mapping: Mapping, originals: readonly OriginalInput[], units: readonly DerivedUnit[], retrieved?: readonly (readonly DerivedUnit[])[]): Promise<readonly StorageInspection[]> {
     const adapter = this.adapter(s, mapping);
     const plan = this.options.comparison;
+    if (retrieved && retrieved.length !== plan.queries.length) v.invalid('Retrieval evidence does not cover the query plan');
     const checks: StorageInspection[] = [];
     const literals: Record<string, JsonValue> = {};
     for (const original of originals) {
       const restored = await adapter.restoreLiteral(structuredClone(units), structuredClone(original));
       literals[original.message.envelope.message_id] = restored.ok ? restored.value : null;
     }
-    for (const query of plan.queries) {
-      const selected = structuredClone(v.value(await adapter.retrieve(structuredClone(query), structuredClone(units), structuredClone(mapping))));
+    for (const [index, query] of plan.queries.entries()) {
+      const provided = retrieved?.[index];
+      if (retrieved && provided === undefined) v.invalid('Retrieval evidence does not cover the query plan');
+      const selected = structuredClone(retrieved ? provided : v.value(await adapter.retrieve(structuredClone(query), structuredClone(units), structuredClone(mapping))));
       if (!Array.isArray(selected) || selected.some(u => !units.some(source => v.same(source, u)))) v.invalid('Retrieval fabricated or changed a derived unit');
       const original = v.json({ originals, versions: mapping.versions, mappingDigest: digestJson(mapping) });
-      const retrieved = v.json({ literals, units: selected, query });
-      const request = { executionId: this.identity.newId('execution'), taskId: this.options.taskId, original, retrieved,
-        expectedConditions: structuredClone(plan.expectedConditions), inputDigest: digestJson({ original, retrieved, expectedConditions: plan.expectedConditions,
+      const retrieval = v.json({ literals, units: selected, query });
+      const request = { executionId: this.identity.newId('execution'), taskId: this.options.taskId, original, retrieved: retrieval,
+        expectedConditions: structuredClone(plan.expectedConditions), inputDigest: digestJson({ original, retrieved: retrieval, expectedConditions: plan.expectedConditions,
           criteriaDigest: plan.criteriaDigest, evaluatorVersion: plan.evaluatorVersion, scope: this.options.scope }), evaluatorVersion: plan.evaluatorVersion, criteriaDigest: plan.criteriaDigest, scope: this.options.scope };
       const result = structuredClone(v.value(await this.options.evaluator.evaluateStorage(structuredClone(request))));
       this.checkResult(result, request);
