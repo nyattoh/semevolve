@@ -98,6 +98,28 @@ test('projection and storage-v1 retain separate runs and immutable prior results
   assert.equal(value(await old.store.snapshot()).entries.filter(e => e.key.collection === 'evaluator.runs').length, 2);
 });
 
+test('an empty projection corpus does not pass or become eligible', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f, { messageId: 'absent' });
+  req.original.originals = [];
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.deepEqual(verdicts(result), ['fail', 'fail', 'fail']);
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+test('projection retrieval rejects the same message selected twice', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f, { messageId: 'public-message' });
+  const copy = structuredClone(req.retrieved.units[0]);
+  copy.unitId = `${copy.unitId}-copy`;
+  req.retrieved.units.push(copy);
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.equal(result.literalRestoration, 'pass');
+  assert.equal(result.meaningPreservation, 'pass');
+  assert.equal(result.retrievalCorrectness, 'fail');
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
 test('projection profiles reject duplicate query digests, duplicate IDs and extra executable fields', { timeout: 30000 }, async () => {
   for (const change of [p => p.queries.push(structuredClone(p.queries[0])), p => p.queries[0].messageIds.push('public-message'), p => { p.script = 'never execute'; }]) {
     const f = projectionFixture();

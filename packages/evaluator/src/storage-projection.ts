@@ -49,7 +49,7 @@ export function projectionOriginals(request: StorageCheckRequest): Originals {
     originals.push({ messageId: envelope.message_id, languageVersionId: envelope.language_version_id, payload: envelope.payload,
       payloadDigest: row.payloadDigest, eventRefs: row.eventRefs, interpretationRefs: row.interpretationRefs, checkRefs: row.checkRefs });
   }
-  if (new Set(originals.map(o => o.messageId)).size !== originals.length) return { kind: 'corrupt' };
+  if (originals.length === 0 || new Set(originals.map(o => o.messageId)).size !== originals.length) return { kind: 'corrupt' };
   return { kind: 'valid', originals, versions: input.versions };
 }
 
@@ -120,7 +120,7 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
     if (!isUtcTimestamp(unit.createdAt)) meanings.push('fail');
   }
   const query = Object.hasOwn(input, 'query') ? rules.queries.find(q => v.same(q.query, input.query)) : undefined;
-  const retrievalCorrectness = invalidSelection ? 'fail' : query === undefined ? 'inconclusive'
-    : v.same([...new Set(selectedIds)].sort(), [...query.messageIds].sort()) ? 'pass' : 'fail';
+  const retrievalCorrectness = invalidSelection || new Set(selectedIds).size !== selectedIds.length ? 'fail' : query === undefined ? 'inconclusive'
+    : v.same([...selectedIds].sort(), [...query.messageIds].sort()) ? 'pass' : 'fail';
   return { literalRestoration, meaningPreservation: combine(meanings), retrievalCorrectness, limitation };
 }
