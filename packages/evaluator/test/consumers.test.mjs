@@ -4,7 +4,7 @@ import { createAllowListPolicyGate } from '@semevolve/policy';
 import { createFixedFakeProvider } from '@semevolve/provider-adapters';
 import { createLanguageRegistry } from '@semevolve/language-registry';
 import { createRegistryInspectionAdapter } from '@semevolve/evaluator';
-import { fixture, identity, request, value } from './support/fixture.mjs';
+import { fixture, identity, input, request, value } from './support/fixture.mjs';
 import { policyHost } from './support/policy.mjs';
 
 test('AT05 real Policy executes the passing control and refuses transmission failure', { timeout: 30000 }, async () => {
@@ -30,8 +30,8 @@ test('AT05 real Policy executes the passing control and refuses transmission fai
 test('AT09 real Registry accepts a check then refuses new conformance after evidence withdrawal', { timeout: 30000 }, async () => {
   const f = fixture();
   const evidence = { evidenceId: 'public-source', source: 'public-fixture', scope: f.run.scope, allowedReaders: ['evaluator'], content: { kind: 'reference_only' } };
-  const execution = value(await f.runtime.evaluate(await request(f, 'transmission', { certainty: 'candidate' }, [evidence])));
   const fingerprint = { peerId: 'peer-b', provider: 'synthetic', modelId: 'fixed', cliVersion: null, settingsDigest: identity.digest({}), introductionDigest: identity.digest('public') };
+  const execution = value(await f.runtime.evaluate(await request(f, 'transmission', { certainty: 'candidate' }, [evidence], { ...input(), fingerprint })));
   const scope = { scopeId: f.run.scope, purpose: 'Synthetic registry consumer', taskRange: 'public-task', participantIds: ['peer-b'] };
   const testSetDigest = identity.digest('public-case-set');
   const inspection = createRegistryInspectionAdapter({ evaluator: f.runtime, testSetDigest });

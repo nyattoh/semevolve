@@ -27,6 +27,7 @@ export interface CaptureInput {
   readonly receiverId: PeerId;
   readonly payload: JsonValue;
   readonly sharedContext: JsonValue;
+  readonly fingerprint?: { readonly peerId: PeerId; readonly provider: string; readonly modelId: string | null; readonly cliVersion: string | null; readonly settingsDigest: string; readonly introductionDigest: string };
 }
 export interface EvaluatorOptions {
   readonly store: TaskStore;
@@ -119,10 +120,12 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const captured = read(s.value, 'evaluator.inputs', id);
     const answer = read(s.value, 'evaluator.answers', id);
     const disclosed = read(s.value, 'evaluator.disclosures', id);
-    if (!captured || !answer || !v.interpretation(answer.interpretation) || !v.same(captured.snapshot, request.interpretation.inputSnapshot)
+    if (!captured || !answer || !disclosed || !v.interpretation(answer.interpretation) || !v.interpretation(disclosed.projection)
+      || disclosed.projection.expectedConditionsDisclosedAt === null || !v.same(captured.snapshot, request.interpretation.inputSnapshot)
       || captured.digest !== request.interpretation.inputDigest || identity.digest(request.interpretation.inputSnapshot) !== request.interpretation.inputDigest
       || request.targetMessageId !== request.interpretation.messageId
-      || !v.same(request.interpretation, disclosed?.projection ?? answer.interpretation)) return reject('Independent committed interpretation mismatch', v.serialise(request));
+      || !v.same(request.interpretation, disclosed.projection)) return reject('Independent committed interpretation mismatch', v.serialise(request));
+    if (request.evidence.some(ref => ref.evidenceId.startsWith('observation-'))) return reject('Observation evidence id is reserved', v.serialise(request));
     for (const ref of request.evidence) {
       const written = await log.insert('evaluator.evidence', ref.evidenceId, { schema: 1, evidence: v.serialise(ref) }, 'evaluator.evidence_registered');
       if (!written.ok) return written.error.code === 'id_collision'
@@ -321,7 +324,8 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const copy = v.serialise(input);
     if (!v.record(copy) || !v.text(copy.messageId) || !v.text(copy.receiverId) || !v.json(copy.payload) || !v.json(copy.sharedContext)) return invalid('Invalid capture');
     const r = await ready(); if (!r.ok) return r;
-    const snapshot = { taskId: run.taskId, languageVersionId: run.languageVersionId, messageId: copy.messageId, receiverId: copy.receiverId, payload: copy.payload, sharedContext: copy.sharedContext };
+    if (copy.fingerprint !== undefined && (!v.implementationFingerprint(copy.fingerprint) || copy.fingerprint.peerId !== copy.receiverId)) return invalid('Invalid implementation fingerprint');
+    const snapshot = { taskId: run.taskId, languageVersionId: run.languageVersionId, messageId: copy.messageId, receiverId: copy.receiverId, payload: copy.payload, sharedContext: copy.sharedContext, ...(copy.fingerprint === undefined ? {} : { fingerprint: copy.fingerprint }) };
     const id = key(copy.messageId, copy.receiverId);
     const result = await log.insert('evaluator.inputs', id, { schema: 1, snapshot, digest: identity.digest(snapshot) }, 'evaluator.input_captured');
     return result.ok ? ok(structuredClone(snapshot)) : result;

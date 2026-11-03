@@ -55,6 +55,29 @@ test('SDK completion true with an optional gap is preserved without issuing perm
   assert.equal(Object.hasOwn(summary, 'authorised'), false);
 });
 
+test('concurrent inspect returns the saved summary instead of colliding on retrievedAt', { timeout: 30000 }, async () => {
+  let tick = 0;
+  const identity = { ...hostIdentity, now: () => new Date(Date.UTC(2026, 9, 28, 0, 0, 0, tick++)).toISOString() };
+  const f = fixture({ identity });
+  let waiting = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const pause = async () => {
+    waiting += 1;
+    if (waiting === 2) release();
+    else await gate;
+  };
+  f.session.inspect = async () => { await pause(); return structuredClone(f.state); };
+  f.session.status = async () => { await pause(); return structuredClone(f.state); };
+  const bridge = createTomboBridge({ store: f.store, session: f.session, sdkCommit: commit, identity });
+  const inspection = input();
+  const [left, right] = await Promise.all([bridge.inspect(inspection), bridge.inspect(structuredClone(inspection))]);
+  assert.equal(left.ok, true, JSON.stringify(left));
+  assert.equal(right.ok, true, JSON.stringify(right));
+  assert.deepEqual(left.value, right.value);
+  assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'tombo.bindings').length, 1);
+});
+
 test('concurrent reconciliation claims SDK application once and preserves an unknown outcome', { timeout: 30000 }, async () => {
   const f = fixture({ maxAttempts: 64 });
   const req = update(value(await f.bridge.inspect(input())).reference);

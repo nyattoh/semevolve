@@ -18,10 +18,10 @@ export function fixture(overrides = {}) {
 }
 export function value(result) { assert.equal(result.ok, true, JSON.stringify(result)); return result.value; }
 export const input = () => ({ messageId: 'public-message', receiverId: 'peer-b', payload: { text: 'candidate' }, sharedContext: { current: 1 } });
-export async function request(f, dimension = 'transmission', answer = { certainty: 'certain' }, evidence = []) {
-  value(await f.runtime.captureInput(input()));
-  value(await f.runtime.recordAnswer({ ...input(), answer }));
-  const interpretation = value(await f.runtime.recordDisclosure(input()));
+export async function request(f, dimension = 'transmission', answer = { certainty: 'certain' }, evidence = [], capture = input()) {
+  value(await f.runtime.captureInput(capture));
+  value(await f.runtime.recordAnswer({ messageId: capture.messageId, receiverId: capture.receiverId, answer }));
+  const interpretation = value(await f.runtime.recordDisclosure({ messageId: capture.messageId, receiverId: capture.receiverId }));
   const base = { taskId: f.run.taskId, targetMessageId: interpretation.messageId, languageVersionId: f.run.languageVersionId, dimension, interpretation, evidence, scope: f.run.scope };
   return { ...base, executionId: identity.newId('execution'), expectedConditions: f.run.expectedConditions[dimension], criteriaDigest: f.run.criteriaDigest, evaluatorVersion: f.run.evaluatorVersion, inputDigest: identity.digest(base) };
 }

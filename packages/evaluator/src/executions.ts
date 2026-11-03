@@ -70,7 +70,7 @@ export function executionLog(store: TaskStore, identity: HostIdentity, run: Eval
       }
       finally { removeAbort(); }
       const settled = await budget.settle({ reservationId: binding.reservationId, outcome: { kind: 'completed', usage: product.usage } });
-      if (!settled.ok) return unavailable('Settlement is unknown; execution result not promoted');
+      if (!settled.ok) throw new Error('Settlement is unknown; execution result not promoted');
       for (let i = 0; i < attempts; i++) {
         const s = await store.snapshot(); if (!s.ok) return s;
         const result = await log.append(s.value, [

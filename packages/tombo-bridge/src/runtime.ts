@@ -57,7 +57,12 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     if (!v.management(actual) || actual.state.taskId !== input.taskId || actual.session.binding.taskId !== input.taskId) return unavailable('SDK inspection state or session unavailable');
     const result = summary(actual);
     const saved = await insert(input.taskId, 'tombo.bindings', input.taskId, { schema: 1, sdkCommit: options.sdkCommit, inputDigest, sessionRef: result.reference.sessionRef, summary: v.serialise(result) });
-    return saved.ok ? ok(result) : saved;
+    if (saved.ok) return ok(result);
+    if (saved.error.code !== 'id_collision') return saved;
+    const latest = await options.store.snapshot(); if (!latest.ok) return latest;
+    const prior = read(latest.value, 'tombo.bindings', input.taskId);
+    if (!prior || !v.summary(prior.summary) || prior.inputDigest !== inputDigest || prior.sdkCommit !== options.sdkCommit) return saved;
+    return ok(structuredClone(prior.summary));
   }
   async function pending(update: PendingTomboUpdate): Promise<Result<JsonObject>> {
     const s = await options.store.snapshot(); if (!s.ok) return s;
