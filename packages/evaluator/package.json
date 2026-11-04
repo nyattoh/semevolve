@@ -18,7 +18,9 @@
   ],
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test": "node --test --test-reporter=tap test/*.test.mjs",
+    "test:consumers": "tsc -p test/tsconfig.json"
   },
   "dependencies": {
     "@semevolve/core": "0.0.0"

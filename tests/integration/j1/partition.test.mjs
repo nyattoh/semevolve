@@ -17,10 +17,17 @@ async function script(args) {
     const child = spawn(process.execPath, args, { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000, killSignal: 'SIGKILL' });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', chunk => { stdout += chunk; });
-    child.stderr.on('data', chunk => { stderr += chunk; });
-    child.on('error', reject);
-    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    const observing = process.env.SEMEVOLVE_J1_DIAGNOSTIC === '1' && args.some(arg => arg.endsWith('composition.test.mjs'));
+    const started = performance.now();
+    const observe = (event, detail = {}) => {
+      if (observing) process.stderr.write(`${JSON.stringify({ kind: 'j1-child-observation', event, at: new Date().toISOString(), parentPid: process.pid, childPid: child.pid, elapsedMs: performance.now() - started, ...detail })}\n`);
+    };
+    observe('spawn', { timeout: 30000, killSignal: 'SIGKILL' });
+    child.stdout.on('data', chunk => { stdout += chunk; observe('stdout', { text: chunk.toString() }); });
+    child.stderr.on('data', chunk => { stderr += chunk; observe('stderr', { text: chunk.toString() }); });
+    child.on('error', error => { observe('error', { message: error.message }); reject(error); });
+    child.on('exit', (code, signal) => observe('exit', { code, signal }));
+    child.on('close', (code, signal) => { observe('close', { code, signal }); resolve({ code, signal, stdout, stderr }); });
   });
 }
 
