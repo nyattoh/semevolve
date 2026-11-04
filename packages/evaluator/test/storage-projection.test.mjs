@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { digestJson } from '@semevolve/core';
 import { createEvaluator } from '@semevolve/evaluator';
+import { judgeProjection } from '../dist/storage-projection.js';
 import { fixture, identity, storageRequest, value } from './support/fixture.mjs';
 import { policyHost } from './support/policy.mjs';
 import { payloads, projectionFixture, projectionRequest, rehash, verdicts } from './support/storage-projection.mjs';
@@ -118,6 +119,63 @@ test('projection retrieval rejects the same message selected twice', { timeout: 
   assert.equal(result.meaningPreservation, 'pass');
   assert.equal(result.retrievalCorrectness, 'fail');
   assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+const forgedGraph = { kind: 'directed_graph', nodes: ['Z'], edges: [] };
+const forgedClauses = { kind: 'clause_sequence', clauses: [{ id: 'forged', claim: 'swapped' }] };
+
+function swapOriginal(req, messageId, payload) {
+  const text = JSON.stringify(payload);
+  const row = req.original.originals.find(item => item.message.envelope.message_id === messageId);
+  row.message.envelope.payload = text;
+  row.message.digest = digestJson(row.message.envelope);
+  row.payloadDigest = digestJson(text);
+  req.retrieved.literals[messageId] = text;
+}
+
+test('projection verifies an original the query did not select', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f, { messageId: 'public-message' });
+  swapOriginal(req, 'graph-message', forgedGraph);
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.deepEqual(verdicts(result), ['pass', 'fail', 'pass']);
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+test('projection verifies every original when the query selects nothing', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f, { messageId: 'absent' });
+  swapOriginal(req, 'public-message', forgedClauses);
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.deepEqual(verdicts(result), ['pass', 'fail', 'pass']);
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+test('projection verifies originals when the retrieved units are absent', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f);
+  swapOriginal(req, 'graph-message', forgedGraph);
+  delete req.retrieved.units;
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.deepEqual(verdicts(result), ['pass', 'fail', 'inconclusive']);
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+test('projection profiles reject a query that lists the same message twice', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const expectedConditions = structuredClone(f.run.expectedConditions);
+  expectedConditions.storage.queries[1].messageIds = ['public-message', 'public-message'];
+  assert.throws(() => createEvaluator({ store: f.store, run: { ...f.run, expectedConditions, criteriaDigest: digestJson(expectedConditions) } }), /Invalid evaluator configuration/);
+  const req = projectionRequest(f, { messageId: 'public-message' });
+  const copy = structuredClone(req.retrieved.units[0]);
+  copy.unitId = `${copy.unitId}-copy`;
+  req.retrieved.units.push(copy);
+  const rules = structuredClone(req.expectedConditions);
+  rules.queries.find(query => query.query.messageId === 'public-message').messageIds = ['public-message', 'public-message'];
+  const judgement = judgeProjection(req, rules);
+  assert.equal(judgement.literalRestoration, 'pass');
+  assert.equal(judgement.meaningPreservation, 'pass');
+  assert.equal(judgement.retrievalCorrectness, 'fail');
 });
 
 test('projection profiles reject duplicate query digests, duplicate IDs and extra executable fields', { timeout: 30000 }, async () => {

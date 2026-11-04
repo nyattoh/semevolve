@@ -23,9 +23,10 @@ function sources(directory) {
 }
 
 function digestBypass(source, file) {
+  const normalized = String(file).replaceAll('\\', '/');
   const violations = [];
-  if (/hostIdentity\.digest/.test(source)) violations.push(`${file} recomputes with the global digest`);
-  if (/digestJson\(/.test(source) && !allowedDefaultDigest.has(file)) violations.push(`${file} verifies with the default digest`);
+  if (/hostIdentity\.digest/.test(source)) violations.push(`${normalized} recomputes with the global digest`);
+  if (/digestJson\(/.test(source) && !allowedDefaultDigest.has(normalized)) violations.push(`${normalized} verifies with the default digest`);
   return violations;
 }
 
@@ -58,4 +59,8 @@ test('persisted runs are rechecked with the configured digest', { timeout: 30000
   const violations = ['packages/evaluator/src', 'packages/tombo-bridge/src'].flatMap(directory => sources(join(root, directory)).flatMap(([file, source]) => digestBypass(source, file)));
   assert.deepEqual(violations, []);
   assert.deepEqual(digestBypass('hostIdentity.digest(expected);\ndigestJson(payload);', 'sample.ts'), ['sample.ts recomputes with the global digest', 'sample.ts verifies with the default digest']);
+  assert.deepEqual(digestBypass('digestJson(envelope)', 'packages\\evaluator\\src\\storage-projection.ts'), []);
+  assert.deepEqual(digestBypass('digestJson(envelope)', 'packages\\tombo-bridge\\src\\managed-session.ts'), []);
+  assert.deepEqual(digestBypass('hostIdentity.digest(expected);\ndigestJson(payload);', 'packages\\evaluator\\src\\storage-projection.ts'), ['packages/evaluator/src/storage-projection.ts recomputes with the global digest']);
+  assert.deepEqual(digestBypass('hostIdentity.digest(expected);\ndigestJson(payload);', 'packages\\evaluator\\src\\runtime.ts'), ['packages/evaluator/src/runtime.ts recomputes with the global digest', 'packages/evaluator/src/runtime.ts verifies with the default digest']);
 });

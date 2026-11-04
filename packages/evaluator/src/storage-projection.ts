@@ -17,7 +17,7 @@ export function projectionConditions(x: unknown): x is ProjectionConditions {
       && (payload.kind === 'clause_sequence' && Array.isArray(payload.clauses)
         || payload.kind === 'directed_graph' && Array.isArray(payload.nodes) && Array.isArray(payload.edges)))
     && Array.isArray(x.queries) && x.queries.length > 0
-    && x.queries.every(q => v.record(q) && Object.keys(q).length === 2 && v.json(q.query) && v.strings(q.messageIds)
+    && x.queries.every(q => v.record(q) && Object.keys(q).length === 2 && v.json(q.query) && v.strings(q.messageIds) && uniqueManifest(q.messageIds)
       && q.messageIds.every(id => v.record(x.payloads) && Object.hasOwn(x.payloads, id)))
     && uniqueManifest(x.queries.map(q => v.record(q) ? q.query! : null));
 }
@@ -71,6 +71,14 @@ const limitation = 'Finite public synthetic whole-payload projection; no real-mo
 const combine = aggregateVerdict;
 const observed = (record: JsonObject, key: string, expected: JsonValue): Verdict => !Object.hasOwn(record, key) ? 'inconclusive' : v.same(record[key], expected) ? 'pass' : 'fail';
 
+function originalsMatchProfile(originals: readonly ProjectionOriginal[], rules: ProjectionConditions): boolean {
+  return originals.every(original => {
+    const expected = rules.payloads[original.messageId];
+    try { return expected !== undefined && v.same(JSON.parse(original.payload), expected); }
+    catch { return false; }
+  });
+}
+
 export function judgeProjection(request: StorageCheckRequest, rules: ProjectionConditions): ProjectionJudgement {
   const parsed = projectionOriginals(request);
   if (parsed.kind !== 'valid' || !sameManifest(parsed.originals.map(original => original.messageId), Object.keys(rules.payloads))) {
@@ -90,9 +98,10 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
       const payload = parsed.originals.find(original => original.messageId === messageId)?.payload;
       return restored === null ? 'inconclusive' : restored === payload ? 'pass' : 'fail';
     }));
-  if (!Object.hasOwn(input, 'units') || input.units === null) return { literalRestoration, meaningPreservation: 'inconclusive', retrievalCorrectness: 'inconclusive', limitation };
+  const payloadsMatch = originalsMatchProfile(parsed.originals, rules);
+  if (!Object.hasOwn(input, 'units') || input.units === null) return { literalRestoration, meaningPreservation: payloadsMatch ? 'inconclusive' : 'fail', retrievalCorrectness: 'inconclusive', limitation };
   if (!Array.isArray(input.units)) return { literalRestoration, meaningPreservation: 'fail', retrievalCorrectness: 'fail', limitation };
-  const meanings: Verdict[] = [];
+  const meanings: Verdict[] = payloadsMatch ? [] : ['fail'];
   const selectedIds: string[] = [];
   const unitIds = new Set<string>();
   let invalidSelection = false;
@@ -108,9 +117,6 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
       meanings.push('fail'); invalidSelection = true; continue;
     }
     unitIds.add(unit.unitId);
-    try {
-      if (!v.same(JSON.parse(original.payload), expected)) meanings.push('fail');
-    } catch { meanings.push('fail'); }
     meanings.push(observed(unit.source, 'digest', original.payloadDigest), observed(unit, 'versions', parsed.versions),
       observed(unit, 'eventRefs', [...original.eventRefs]), observed(unit, 'interpretationRefs', [...original.interpretationRefs]), observed(unit, 'checkRefs', [...original.checkRefs]));
     const location = unit.source.location;
@@ -126,6 +132,6 @@ export function judgeProjection(request: StorageCheckRequest, rules: ProjectionC
   }
   const query = Object.hasOwn(input, 'query') ? rules.queries.find(q => v.same(q.query, input.query)) : undefined;
   const retrievalCorrectness = invalidSelection ? 'fail' : query === undefined ? 'inconclusive'
-    : sameManifest(selectedIds, [...query.messageIds]) ? 'pass' : 'fail';
+    : uniqueManifest(query.messageIds) && sameManifest(selectedIds, [...query.messageIds]) ? 'pass' : 'fail';
   return { literalRestoration, meaningPreservation: combine(meanings), retrievalCorrectness, limitation };
 }
