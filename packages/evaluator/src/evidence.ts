@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { EvidenceRef, JsonValue, PeerId, Verdict } from '@semevolve/core';
 import type { Conditions } from './conditions.js';
 import { compare } from './conditions.js';
+import { aggregateVerdict } from './observation.js';
 import * as v from './validation.js';
 
 export const bodyDigest = (body: string): string => createHash('sha256').update(body, 'utf8').digest('hex');
@@ -23,5 +24,9 @@ export function checkSources(evidence: readonly EvidenceRef[], rules: Conditions
     if (verdict === 'fail') failed = true;
     if (verdict === 'inconclusive') { unknown = true; reasons.push('Source fields unavailable'); }
   }
-  return { verdict: failed ? 'fail' : unknown ? 'inconclusive' : 'pass', limitation: reasons.length ? reasons.join('; ') : null };
+  const verdicts: Verdict[] = [];
+  if (failed) verdicts.push('fail');
+  if (unknown) verdicts.push('inconclusive');
+  if (!failed && !unknown) verdicts.push('pass');
+  return { verdict: aggregateVerdict(verdicts), limitation: reasons.length ? reasons.join('; ') : null };
 }

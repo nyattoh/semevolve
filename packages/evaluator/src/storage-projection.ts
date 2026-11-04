@@ -1,4 +1,5 @@
 import { digestJson, isUtcTimestamp, sameManifest, uniqueManifest } from '@semevolve/core';
+import { aggregateVerdict } from './observation.js';
 import type { JsonObject, JsonValue, Verdict } from '@semevolve/core';
 import type { StorageCheckRequest } from './contracts/evaluation.js';
 import * as v from './validation.js';
@@ -67,7 +68,7 @@ export interface ProjectionJudgement {
   readonly limitation: string;
 }
 const limitation = 'Finite public synthetic whole-payload projection; no real-model or blind-isolation claim';
-const combine = (verdicts: readonly Verdict[]): Verdict => verdicts.includes('fail') ? 'fail' : verdicts.includes('inconclusive') ? 'inconclusive' : 'pass';
+const combine = aggregateVerdict;
 const observed = (record: JsonObject, key: string, expected: JsonValue): Verdict => !Object.hasOwn(record, key) ? 'inconclusive' : v.same(record[key], expected) ? 'pass' : 'fail';
 
 export function judgeProjection(request: StorageCheckRequest, rules: ProjectionConditions): ProjectionJudgement {

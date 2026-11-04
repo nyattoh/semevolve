@@ -42,7 +42,10 @@ test('AT09 real Registry accepts a check then refuses new conformance after evid
   const record = { versionId: f.run.languageVersionId, fingerprint, scopeId: f.run.scope, testSetDigest, evaluatorVersion: f.run.evaluatorVersion, checkIds: [execution.result.checkId], verdict: 'pass', checkedAt: identity.now(), expiresAt: null };
   value(await registry.recordConformance(record));
   value(await f.runtime.withdraw({ evidenceId: evidence.evidenceId, reason: 'Synthetic withdrawal', withdrawnAt: identity.now() }));
-  assert.equal(value(await inspection.readConformance(record)), null);
+  const withdrawnProof = await inspection.readConformance(record);
+  assert.equal(withdrawnProof.ok, false);
+  assert.equal(withdrawnProof.error.code, 'invalid_input');
+  assert.match(withdrawnProof.error.issues.join('\n'), /needs re-check/);
   const next = { ...record, checkedAt: new Date(Date.parse(record.checkedAt) + 1).toISOString() };
   const refused = await registry.recordConformance(next);
   assert.equal(refused.ok, false);

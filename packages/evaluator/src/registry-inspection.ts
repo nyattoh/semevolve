@@ -1,5 +1,6 @@
 import { sameFields, uniqueManifest } from '@semevolve/core';
 import type { CheckExecution, CheckId, Digest, LanguageVersionId, PeerId, Result, UtcTimestamp, Verdict } from '@semevolve/core';
+import { aggregateVerdict, classifyObservation } from './observation.js';
 import type { EvaluatorRuntime } from './runtime.js';
 import { invalid, ok } from './records.js';
 import * as v from './validation.js';
@@ -25,14 +26,16 @@ export function createRegistryInspectionAdapter(options: { readonly evaluator: E
         if (!result.ok) return result;
         const { execution, request } = result.value;
         const snapshot = request.interpretation.inputSnapshot;
-        if (!result.value.eligible || !sameFields(['testSetDigest', 'evaluatorVersion'] as const, { testSetDigest: result.value.testSetDigest, evaluatorVersion: execution.result.evaluatorVersion }, { testSetDigest: fixed.testSetDigest, evaluatorVersion: fixed.evaluatorVersion })
+        if (!sameFields(['testSetDigest', 'evaluatorVersion'] as const, { testSetDigest: result.value.testSetDigest, evaluatorVersion: execution.result.evaluatorVersion }, { testSetDigest: fixed.testSetDigest, evaluatorVersion: fixed.evaluatorVersion })
           || execution.result.dimension !== 'transmission' || execution.result.method !== 'deterministic_test'
           || execution.result.languageVersionId !== fixed.versionId || execution.result.scope !== fixed.scopeId
           || !v.record(snapshot) || !v.same(snapshot.fingerprint, fixed.fingerprint) || request.interpretation.receiverId !== fixed.fingerprint.peerId
           || execution.performedAt > fixed.checkedAt) return ok(null);
+        const observation = classifyObservation({ recheckRequired: result.value.recheckRequired, reason: result.value.reason, verdict: execution.result.verdict });
+        if (observation.kind === 'recheck') return invalid(`needs re-check: ${observation.reason}`);
         checks.push(execution);
       }
-      return ok({ record: fixed, independent: true, fixedBeforeRun: true, regressionVerdict: 'pass', checks });
+      return ok({ record: fixed, independent: true, fixedBeforeRun: true, regressionVerdict: aggregateVerdict(checks.map(check => check.result.verdict)), checks });
     },
   };
 }
