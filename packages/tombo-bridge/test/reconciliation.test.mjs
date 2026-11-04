@@ -1,11 +1,38 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readdir, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { hostIdentity } from '@semevolve/core';
+import { canonicalJson, hostIdentity } from '@semevolve/core';
 import { createManagedSession, createTomboBridge } from '@semevolve/tombo-bridge';
 import { commit, fixture, input, inspected, management, update, value } from './support/fixture.mjs';
+
+test('a custom digest accepts its own inspection and update and rejects the default digest', { timeout: 30000 }, async () => {
+  const digest = value => createHash('sha256').update(`configured:${canonicalJson(value)}`, 'utf8').digest('hex');
+  const identity = { ...hostIdentity, digest };
+  const f = fixture({ identity });
+  const inspection = input();
+  inspection.interpretation.inputDigest = identity.digest(inspection.interpretation.inputSnapshot);
+  const accepted = value(await f.bridge.inspect(inspection));
+  assert.equal(accepted.reference.sessionRef, 'public-session');
+  const rejected = await f.bridge.inspect(input());
+  assert.equal(rejected.ok, false, JSON.stringify(rejected));
+  assert.equal(rejected.error.code, 'invalid_input');
+  const payload = { id: 'custom-execution', source: { kind: 'tool', locator: 'public-synthetic-test' }, references: [], observations: [{ executionId: 'custom-execution', probeId: 'public-probe', outcome: 'unavailable', evidence: [], toolCalls: 1, elapsedMs: 1, costYen: null }] };
+  f.session.receive = async updateRequest => {
+    const receipt = { ...structuredClone(updateRequest.payload), payloadHash: identity.digest(updateRequest.payload), status: 'received_unassessed', appliedRevision: null };
+    f.state.session.updates.push(receipt);
+    f.state.session.pendingUpdates = [receipt];
+    return structuredClone(f.state);
+  };
+  const received = await f.bridge.receive({ taskId: 'public-task', executionId: 'custom-execution', expected: accepted.reference, inputDigest: identity.digest(payload), payload });
+  assert.deepEqual(value(received), { executionId: 'custom-execution' });
+  const other = { ...payload, id: 'other-execution', observations: [{ ...payload.observations[0], executionId: 'other-execution' }] };
+  const refused = await f.bridge.receive({ taskId: 'public-task', executionId: 'other-execution', expected: accepted.reference, inputDigest: hostIdentity.digest(other), payload: other });
+  assert.equal(refused.ok, false, JSON.stringify(refused));
+  assert.equal(refused.error.code, 'invalid_input');
+});
 
 test('AT10 receives one observation, reconciles actual execution proof and replays the exact summary', { timeout: 30000 }, async () => {
   const f = fixture();

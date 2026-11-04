@@ -60,7 +60,7 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
       canReportCompletion: result.understandingStatus.canReportCompletion, terminationReason: result.sessionStopReason?.reason ?? result.state.stopReason, retrievedAt: identity.now() };
   }
   async function inspect(input: TomboInspectionInput): Promise<Result<TomboInspectionSummary>> {
-    if (!v.inspection(input)) return invalid('Invalid TOMBO inspection input');
+    if (!v.inspection(input, identity.digest)) return invalid('Invalid TOMBO inspection input');
     const inputDigest = identity.digest(v.serialise(input));
     const operationIdentity = bindIdentity(inspectIdentityKeys, { taskId: input.taskId, inputDigest, sdkCommit: options.sdkCommit });
     const claim = { schema: 1, input: v.serialise(input), inputDigest, sdkCommit: options.sdkCommit, identity: operationIdentity.identity };
@@ -168,12 +168,12 @@ export function createTomboBridge(options: TomboBridgeOptions): TomboPort {
     }));
   }
   async function receive(update: PendingTomboUpdate): Promise<Result<{ readonly executionId: PendingTomboUpdate['executionId'] }>> {
-    if (!v.update(update)) return invalid('Invalid update or input digest');
+    if (!v.update(update, identity.digest)) return invalid('Invalid update or input digest');
     const delivered = await deliver(update);
     return delivered.ok ? ok({ executionId: update.executionId }) : delivered;
   }
   async function reconcile(update: PendingTomboUpdate): Promise<Result<TomboReconciliation>> {
-    if (!v.update(update)) return invalid('Invalid reconciliation input');
+    if (!v.update(update, identity.digest)) return invalid('Invalid reconciliation input');
     const saved = await ensurePending(update); if (!saved.ok) return saved;
     const updateDigest = identity.digest(v.serialise(update));
     const operationIdentity = bindIdentity(deliveryIdentityKeys, { executionId: update.executionId, taskId: update.taskId, updateDigest, sdkCommit: options.sdkCommit });

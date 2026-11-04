@@ -244,7 +244,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const source = read(s.value, 'evaluator.requests', execution.executionId);
     const configuration = read(s.value, 'evaluator.runs', run.runId)?.configuration;
     const proven = source && evaluationRequest(source.request) ? executionIdentity(value => identity.digest(value), run, source.request, 'evaluation') : null;
-    const persisted = source && evaluationRequest(source.request) && validRun(configuration) ? executionIdentity(value => identity.digest(value), configuration, source.request, 'evaluation') : null;
+    const persisted = source && evaluationRequest(source.request) && validRun(configuration, identity.digest) ? executionIdentity(value => identity.digest(value), configuration, source.request, 'evaluation') : null;
     if (!source || !evaluationRequest(source.request) || !proven || !persisted || !completionProven({ identity: persisted.identity, steps: [...evaluationSteps] }, { identity: proven, steps: [...evaluationSteps] })
       || !completionProven(saved.value, { identity: proven, steps: [...evaluationSteps] })
       || !sameFields(['runId', 'requestDigest'] as const, { runId: source.runId, requestDigest: source.requestDigest }, { runId: run.runId, requestDigest: saved.value.requestDigest })
@@ -274,7 +274,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     if (!source || !v.text(source.runId) || !evaluationRequest(source.request)) throw new Error('Canonical referenced request is unavailable');
     const req = source.request;
     const configuration = read(snapshot, 'evaluator.runs', source.runId)?.configuration;
-    if (!validRun(configuration) || configuration.runId !== source.runId || source.kind !== 'evaluation'
+    if (!validRun(configuration, identity.digest) || configuration.runId !== source.runId || source.kind !== 'evaluation'
       || execution.executionId !== matches[0]!.key.id || req.executionId !== execution.executionId
       || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: saved.requestDigest })
       || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: identity.digest(v.serialise({ runId: source.runId, kind: 'evaluation', request: req })) })
@@ -446,11 +446,11 @@ function storageRequest(x: unknown): x is StorageCheckRequest {
 function evaluationInput(request: EvaluationRequest): JsonValue {
   return v.serialise({ taskId: request.taskId, targetMessageId: request.targetMessageId, languageVersionId: request.languageVersionId, dimension: request.dimension, interpretation: request.interpretation, evidence: request.evidence, scope: request.scope });
 }
-function validRun(value: unknown): value is EvaluatorRun {
+function validRun(value: unknown, digest: HostIdentity['digest']): value is EvaluatorRun {
   if (!v.object(value) || ![value.runId, value.taskId, value.languageVersionId, value.evaluatorVersion, value.scope, value.evaluatorId].every(v.text)
     || !v.digest(value.criteriaDigest) || !v.digest(value.testSetDigest) || value.synthetic !== true || value.checkerId !== 'conditions-v1'
     || !v.record(value.expectedConditions)) return false;
   const expected = value.expectedConditions;
   return ['transmission', 'factuality', 'authorisation', 'task_outcome'].every(d => conditions(expected[d]))
-    && storageConditions(expected.storage) && sameFields(['criteriaDigest'] as const, { criteriaDigest: hostIdentity.digest(expected) }, { criteriaDigest: value.criteriaDigest });
+    && storageConditions(expected.storage) && sameFields(['criteriaDigest'] as const, { criteriaDigest: digest(expected) }, { criteriaDigest: value.criteriaDigest });
 }

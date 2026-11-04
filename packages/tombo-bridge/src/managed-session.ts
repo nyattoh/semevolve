@@ -5,8 +5,8 @@ import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { digestJson, sameManifest, uniqueManifest } from '@semevolve/core';
-import type { JsonObject, JsonValue } from '@semevolve/core';
+import { digestJson, hostIdentity, sameManifest, uniqueManifest } from '@semevolve/core';
+import type { HostIdentity, JsonObject, JsonValue } from '@semevolve/core';
 import type { TomboInspectionInput } from './contracts/tombo.js';
 import { inspectionSteps } from './runtime.js';
 import type { InspectionCompletion, ManagedSessionPort } from './runtime.js';
@@ -34,6 +34,7 @@ export interface ManagedSessionOptions {
   readonly propose: (operation: 'inspect' | 'update', context: JsonValue) => JsonValue;
   readonly reflect?: (context: JsonValue) => JsonValue;
   readonly timeoutMs?: number;
+  readonly identity?: HostIdentity;
   readonly fault?: (step: 'activated' | 'prepared' | 'inspected') => Promise<void>;
 }
 export interface ManagedSessionRuntime extends ManagedSessionPort {
@@ -56,6 +57,7 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
     const actual = createHash('sha256').update(await readFile(join(runtime, name))).digest('hex');
     if (actual !== expected) throw new Error(`Fixed SDK provenance mismatch: ${name}`);
   }
+  const identity = options.identity ?? hostIdentity;
   const timeout = options.timeoutMs ?? 30000;
   if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 30000) throw new Error('Invalid helper timeout');
   const task = v.serialise(options.task), clock = v.serialise(options.taskClock);
@@ -146,12 +148,12 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
     return command(['reflect', '--state', '.session/state.json', '--proposal', path, '--ledger', '.session/sdk.jsonl', '--out', '.session/state.json']);
   }
   async function receive(update: PendingTomboUpdate): Promise<unknown> {
-    if (update.taskId !== taskId || !v.update(update)) throw new Error('Invalid managed receipt');
+    if (update.taskId !== taskId || !v.update(update, identity.digest)) throw new Error('Invalid managed receipt');
     const path = await saved('receipt', update.payload);
     return command(['receive', '--input', path]);
   }
   async function apply(update: PendingTomboUpdate): Promise<unknown> {
-    if (update.taskId !== taskId || !v.update(update)) throw new Error('Invalid managed application');
+    if (update.taskId !== taskId || !v.update(update, identity.digest)) throw new Error('Invalid managed application');
     const actual = await command(['status']);
     if (!v.management(actual) || actual.session.binding.sessionId !== update.expected.sessionRef || actual.session.accountingUncertain || actual.session.pendingOperation !== null) throw new Error('Managed application authority is unavailable');
     const applied = actual.state.appliedExecutions.find(e => e.executionId === update.executionId);

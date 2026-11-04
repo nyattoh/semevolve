@@ -1,4 +1,4 @@
-import { canonicalJson, digestJson, isUtcTimestamp } from '@semevolve/core';
+import { canonicalJson, isUtcTimestamp, sameFields } from '@semevolve/core';
 import type { JsonObject, JsonValue } from '@semevolve/core';
 import type { PendingTomboUpdate, TomboInspectionInput, TomboInspectionSummary } from './contracts/tombo.js';
 
@@ -21,16 +21,18 @@ export function receipt(x: unknown): x is Receipt {
     && Array.isArray(o.evidence) && o.evidence.every(record) && (o.outcome === 'completed' || o.evidence.length === 0) && integer(o.toolCalls)
     && typeof o.elapsedMs === 'number' && Number.isFinite(o.elapsedMs) && o.elapsedMs >= 0 && (o.costYen === null || typeof o.costYen === 'number' && Number.isFinite(o.costYen) && o.costYen >= 0));
 }
-export function update(x: unknown): x is PendingTomboUpdate & { readonly payload: Receipt } {
-  return object(x) && text(x.taskId) && text(x.executionId) && object(x.expected) && text(x.expected.sessionRef) && integer(x.expected.revision)
-    && digest(x.inputDigest) && receipt(x.payload) && x.payload.id === x.executionId && x.payload.observations[0]?.executionId === x.executionId && digestJson(x.payload) === x.inputDigest;
+export function update(x: unknown, hash: (value: JsonValue) => string): x is PendingTomboUpdate & { readonly payload: Receipt } {
+  if (!object(x) || !text(x.taskId) || !text(x.executionId) || !object(x.expected) || !text(x.expected.sessionRef) || !integer(x.expected.revision)
+    || !digest(x.inputDigest) || !receipt(x.payload) || x.payload.id !== x.executionId || x.payload.observations[0]?.executionId !== x.executionId) return false;
+  return sameFields(['inputDigest'] as const, { inputDigest: hash(serialise(x.payload)) }, { inputDigest: x.inputDigest });
 }
-export function inspection(x: unknown): x is TomboInspectionInput {
-  return record(x) && text(x.taskId) && integer(x.contextRevision) && json(x.transmissionContract) && json(x.proposedAction) && x.reflectionRequired === true
-    && record(x.interpretation) && text(x.interpretation.messageId) && text(x.interpretation.receiverId) && json(x.interpretation.inputSnapshot)
-    && digest(x.interpretation.inputDigest) && digestJson(x.interpretation.inputSnapshot) === x.interpretation.inputDigest && json(x.interpretation.answer)
-    && isUtcTimestamp(x.interpretation.recordedAt) && (x.interpretation.expectedConditionsDisclosedAt === null || isUtcTimestamp(x.interpretation.expectedConditionsDisclosedAt))
-    && Array.isArray(x.evidence) && x.evidence.every(e => record(e) && text(e.evidenceId) && text(e.source) && text(e.scope) && Array.isArray(e.allowedReaders) && e.allowedReaders.every(text) && record(e.content));
+export function inspection(x: unknown, hash: (value: JsonValue) => string): x is TomboInspectionInput {
+  if (!record(x) || !text(x.taskId) || !integer(x.contextRevision) || !json(x.transmissionContract) || !json(x.proposedAction) || x.reflectionRequired !== true
+    || !record(x.interpretation) || !text(x.interpretation.messageId) || !text(x.interpretation.receiverId) || !json(x.interpretation.inputSnapshot)
+    || !digest(x.interpretation.inputDigest) || !json(x.interpretation.answer)
+    || !isUtcTimestamp(x.interpretation.recordedAt) || !(x.interpretation.expectedConditionsDisclosedAt === null || isUtcTimestamp(x.interpretation.expectedConditionsDisclosedAt))
+    || !Array.isArray(x.evidence) || !x.evidence.every(e => record(e) && text(e.evidenceId) && text(e.source) && text(e.scope) && Array.isArray(e.allowedReaders) && e.allowedReaders.every(text) && record(e.content))) return false;
+  return sameFields(['inputDigest'] as const, { inputDigest: hash(serialise(x.interpretation.inputSnapshot)) }, { inputDigest: x.interpretation.inputDigest });
 }
 export interface Management {
   readonly session: { readonly binding: { readonly sessionId: string; readonly taskId: string }; readonly updates: readonly JsonObject[]; readonly pendingUpdates: readonly JsonObject[]; readonly accountingUncertain: boolean; readonly pendingOperation: JsonValue };
