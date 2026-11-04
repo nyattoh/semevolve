@@ -118,7 +118,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const r = await ready(); if (!r.ok) return r;
     const version = await fixed(request); if (!version.ok) return version;
     const rules = expected[request.dimension];
-    if (request.languageVersionId !== run.languageVersionId || request.scope !== run.scope || !conditions(rules) || !v.same(request.expectedConditions, rules)
+    if (!sameFields(['languageVersionId'] as const, { languageVersionId: request.languageVersionId }, { languageVersionId: run.languageVersionId }) || request.scope !== run.scope || !conditions(rules) || !v.same(request.expectedConditions, rules)
       || identity.digest(evaluationInput(request)) !== request.inputDigest) return reject('Run, conditions or input digest mismatch', v.serialise(request));
     const s = await options.store.snapshot(); if (!s.ok) return s;
     const id = key(request.targetMessageId, request.interpretation.receiverId);
@@ -177,7 +177,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
     const rules = expected.storage;
     if (!storageConditions(rules)) return invalid('Invalid storage conditions');
     if (request.scope !== run.scope || !v.same(request.expectedConditions, rules)
-      || request.inputDigest !== identity.digest(storageInput(request))) return reject('Storage conditions or input digest mismatch', v.serialise(request));
+      || request.inputDigest !== identity.digest(storageInput(request)) || !projectionLanguageBound(request, run.languageVersionId)) return reject('Storage conditions or input digest mismatch', v.serialise(request));
     const result = await executions.runCheck(request, 'storage', [], async () => {
       const started = performance.now();
       const judgement = rules.kind === 'storage-projection-v1' ? judgeProjection(request, rules) : {
@@ -252,7 +252,9 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: source.request.criteriaDigest, evaluatorVersion: source.request.evaluatorVersion }, { criteriaDigest: run.criteriaDigest, evaluatorVersion: run.evaluatorVersion })
       || source.request.inputDigest !== execution.inputDigest
       || source.request.taskId !== execution.taskId || source.request.scope !== execution.result.scope || source.request.dimension !== execution.result.dimension
-      || source.request.targetMessageId !== execution.result.targetMessageId || source.request.languageVersionId !== execution.result.languageVersionId
+      || source.request.targetMessageId !== execution.result.targetMessageId
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: source.request.languageVersionId }, { languageVersionId: run.languageVersionId })
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: execution.result.languageVersionId }, { languageVersionId: run.languageVersionId })
       || !sameFields(['evaluatorVersion'] as const, { evaluatorVersion: execution.result.evaluatorVersion }, { evaluatorVersion: run.evaluatorVersion })
       || source.request.inputDigest !== identity.digest(evaluationInput(source.request))
       || !v.same(source.request.expectedConditions, expected[source.request.dimension])) return unavailable('Canonical request and result linkage is invalid');
@@ -281,7 +283,10 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || req.taskId !== run.taskId || execution.taskId !== run.taskId || configuration.taskId !== run.taskId
       || req.scope !== run.scope || execution.result.scope !== run.scope || configuration.scope !== run.scope
       || req.targetMessageId !== original.messageId || execution.result.targetMessageId !== original.messageId
-      || req.languageVersionId !== original.languageVersionId || execution.result.languageVersionId !== original.languageVersionId || configuration.languageVersionId !== original.languageVersionId
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: req.languageVersionId }, { languageVersionId: run.languageVersionId })
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: execution.result.languageVersionId }, { languageVersionId: run.languageVersionId })
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: configuration.languageVersionId }, { languageVersionId: run.languageVersionId })
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: original.languageVersionId }, { languageVersionId: run.languageVersionId })
       || !sameFields(['criteriaDigest', 'evaluatorVersion'] as const, { criteriaDigest: req.criteriaDigest, evaluatorVersion: req.evaluatorVersion }, { criteriaDigest: configuration.criteriaDigest, evaluatorVersion: configuration.evaluatorVersion })
       || !sameFields(['evaluatorVersion'] as const, { evaluatorVersion: execution.result.evaluatorVersion }, { evaluatorVersion: configuration.evaluatorVersion })
       || req.dimension !== execution.result.dimension || req.inputDigest !== execution.inputDigest || req.inputDigest !== identity.digest(evaluationInput(req))
@@ -340,7 +345,7 @@ export function createEvaluator(options: EvaluatorOptions): EvaluatorRuntime {
       || req.inputDigest !== identity.digest(storageInput(req)) || result.inputDigest !== req.inputDigest
       || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: saved.requestDigest })
       || !sameFields(['requestDigest'] as const, { requestDigest: source.requestDigest }, { requestDigest: identity.digest(v.serialise({ runId: run.runId, kind: 'storage', request: req })) })
-      || !storageConditions(rules) || !v.same(rules, expected.storage)
+      || !storageConditions(rules) || !v.same(rules, expected.storage) || !projectionLanguageBound(req, run.languageVersionId)
       || !sameManifest(result.evidenceIds, [`observation-${executionId}`])
       || !completionProven(saved, { identity: executionIdentity(value => identity.digest(value), run, req, 'storage'), steps: [...evaluationSteps] })) return unavailable('Canonical storage request and result linkage is invalid');
     const evidence = read(s, 'evaluator.evidence', `observation-${executionId}`)?.evidence;
@@ -442,6 +447,12 @@ function evaluationRequest(x: unknown): x is EvaluationRequest {
 function storageRequest(x: unknown): x is StorageCheckRequest {
   return v.object(x) && [x.taskId, x.executionId, x.scope, x.evaluatorVersion].every(v.text) && v.json(x.original) && v.json(x.retrieved)
     && storageConditions(x.expectedConditions) && v.digest(x.inputDigest) && v.digest(x.criteriaDigest);
+}
+function projectionLanguageBound(request: StorageCheckRequest, languageVersionId: string): boolean {
+  if (!v.record(request.expectedConditions) || request.expectedConditions.kind !== 'storage-projection-v1') return true;
+  const parsed = projectionOriginals(request);
+  if (parsed.kind !== 'valid') return true;
+  return sameFields(['languageVersionId'] as const, { languageVersionId: parsed.versions.languageVersionId }, { languageVersionId });
 }
 function evaluationInput(request: EvaluationRequest): JsonValue {
   return v.serialise({ taskId: request.taskId, targetMessageId: request.targetMessageId, languageVersionId: request.languageVersionId, dimension: request.dimension, interpretation: request.interpretation, evidence: request.evidence, scope: request.scope });

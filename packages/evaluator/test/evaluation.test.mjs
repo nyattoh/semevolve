@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
+import { createEvaluator } from '@semevolve/evaluator';
 import { fixture, identity, request, storageRequest, value } from './support/fixture.mjs';
 
 test('AT05 stores transmission failure for candidate changed to certain', { timeout: 30000 }, async () => {
@@ -105,6 +106,34 @@ test('AT24 changed criteria or evaluator invalidates the comparison and preserve
     assert.deepEqual(eligibility.request, req);
     assert.equal(value(await f.store.snapshot()).entries.filter(e => e.key.collection === 'evaluator.run-invalidations').length, 1);
   }
+});
+
+test('a stored pass cannot be reread as eligible under another language', { timeout: 30000 }, async () => {
+  const f = fixture();
+  const req = await request(f, 'transmission', { certainty: 'candidate' });
+  const execution = value(await f.runtime.evaluate(req));
+  assert.equal(value(await f.runtime.readCheckEligibility(execution.result.checkId)).eligible, true);
+  const tampered = structuredClone(value(await f.store.snapshot()));
+  const requestEntry = tampered.entries.find(entry => entry.key.collection === 'evaluator.requests' && entry.key.id === execution.executionId);
+  const resultEntry = tampered.entries.find(entry => entry.key.collection === 'evaluator.executions' && entry.key.id === execution.executionId);
+  const stored = requestEntry.value.request;
+  stored.languageVersionId = 'other-language';
+  const { taskId, targetMessageId, languageVersionId, dimension, interpretation, evidence, scope } = stored;
+  stored.inputDigest = identity.digest({ taskId, targetMessageId, languageVersionId, dimension, interpretation, evidence, scope });
+  const requestDigest = identity.digest({ runId: f.run.runId, kind: 'evaluation', request: stored });
+  requestEntry.value.requestDigest = requestDigest;
+  requestEntry.value.identity.requestDigest = requestDigest;
+  resultEntry.value.requestDigest = requestDigest;
+  resultEntry.value.identity.requestDigest = requestDigest;
+  resultEntry.value.result.inputDigest = stored.inputDigest;
+  resultEntry.value.result.result.languageVersionId = stored.languageVersionId;
+  const reader = createEvaluator({
+    store: { async snapshot() { return { ok: true, value: tampered }; }, transact: batch => f.store.transact(batch) },
+    run: f.run,
+  });
+  const read = await reader.readCheckEligibility(execution.result.checkId);
+  assert.equal(read.ok, false, JSON.stringify(read));
+  assert.equal(read.error.code, 'unavailable');
 });
 
 test('source scope, missing body, wrong hashes and unknown condition formats fail closed', { timeout: 30000 }, async () => {

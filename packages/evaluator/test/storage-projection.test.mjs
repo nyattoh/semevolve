@@ -99,6 +99,64 @@ test('projection and storage-v1 retain separate runs and immutable prior results
   assert.equal(value(await old.store.snapshot()).entries.filter(e => e.key.collection === 'evaluator.runs').length, 2);
 });
 
+function retargetLanguage(req, languageVersionId) {
+  req.original.versions.languageVersionId = languageVersionId;
+  for (const row of req.original.originals) {
+    row.message.envelope.language_version_id = languageVersionId;
+    row.message.digest = digestJson(row.message.envelope);
+  }
+}
+
+test('a projection for another language cannot pass the run', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f);
+  retargetLanguage(req, 'other-language');
+  const rejected = await f.runtime.evaluateStorage(rehash(req));
+  assert.equal(rejected.ok, false, JSON.stringify(rejected));
+  assert.equal(rejected.error.code, 'invalid_input');
+  assert.equal((await f.runtime.readStorageCheckEligibility(req.executionId)).error.code, 'unavailable');
+  assert.equal(value(await f.store.snapshot()).entries.filter(entry => entry.key.collection === 'evaluator.storage-results').length, 0);
+});
+
+test('projection envelopes that disagree with the corpus language cannot pass', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f);
+  const row = req.original.originals[0];
+  row.message.envelope.language_version_id = 'other-language';
+  row.message.digest = digestJson(row.message.envelope);
+  const result = value(await f.runtime.evaluateStorage(rehash(req)));
+  assert.deepEqual(verdicts(result), ['fail', 'fail', 'fail']);
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, false);
+});
+
+test('a stored projection cannot be reread as eligible under another language', { timeout: 30000 }, async () => {
+  const f = projectionFixture();
+  const req = projectionRequest(f);
+  value(await f.runtime.evaluateStorage(req));
+  assert.equal(value(await f.runtime.readStorageCheckEligibility(req.executionId)).eligible, true);
+  const tampered = structuredClone(value(await f.store.snapshot()));
+  const requestEntry = tampered.entries.find(entry => entry.key.collection === 'evaluator.requests');
+  const resultEntry = tampered.entries.find(entry => entry.key.collection === 'evaluator.storage-results');
+  const evidenceEntry = tampered.entries.find(entry => entry.key.id === `observation-${req.executionId}`);
+  retargetLanguage(requestEntry.value.request, 'other-language');
+  const stored = requestEntry.value.request;
+  stored.inputDigest = digestJson({ original: stored.original, retrieved: stored.retrieved, expectedConditions: stored.expectedConditions, criteriaDigest: stored.criteriaDigest, evaluatorVersion: stored.evaluatorVersion, scope: stored.scope });
+  const requestDigest = identity.digest({ runId: f.run.runId, kind: 'storage', request: stored });
+  requestEntry.value.requestDigest = requestDigest;
+  requestEntry.value.identity.requestDigest = requestDigest;
+  resultEntry.value.requestDigest = requestDigest;
+  resultEntry.value.identity.requestDigest = requestDigest;
+  resultEntry.value.result.inputDigest = stored.inputDigest;
+  evidenceEntry.value.evidence.original = stored.original;
+  const reader = createEvaluator({
+    store: { async snapshot() { return { ok: true, value: tampered }; }, transact: batch => f.store.transact(batch) },
+    run: f.run,
+  });
+  const read = await reader.readStorageCheckEligibility(req.executionId);
+  assert.equal(read.ok, false, JSON.stringify(read));
+  assert.equal(read.error.code, 'unavailable');
+});
+
 test('an empty projection corpus does not pass or become eligible', { timeout: 30000 }, async () => {
   const f = projectionFixture();
   const req = projectionRequest(f, { messageId: 'absent' });

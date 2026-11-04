@@ -1,4 +1,4 @@
-import { canonicalJson, isUtcTimestamp, sameFields } from '@semevolve/core';
+import { canonicalJson, isUtcTimestamp, sameFields, uniqueManifest } from '@semevolve/core';
 import type { JsonObject, JsonValue } from '@semevolve/core';
 import type { PendingTomboUpdate, TomboInspectionInput, TomboInspectionSummary } from './contracts/tombo.js';
 
@@ -26,12 +26,19 @@ export function update(x: unknown, hash: (value: JsonValue) => string): x is Pen
     || !digest(x.inputDigest) || !receipt(x.payload) || x.payload.id !== x.executionId || x.payload.observations[0]?.executionId !== x.executionId) return false;
   return sameFields(['inputDigest'] as const, { inputDigest: hash(serialise(x.payload)) }, { inputDigest: x.inputDigest });
 }
+export function evidenceContent(content: unknown): boolean {
+  if (!record(content)) return false;
+  if (content.kind === 'reference_only') return true;
+  if (content.kind === 'unavailable') return text(content.reason);
+  return content.kind === 'retrieved' && typeof content.body === 'string' && digest(content.digest) && isUtcTimestamp(content.retrievedAt);
+}
 export function inspection(x: unknown, hash: (value: JsonValue) => string): x is TomboInspectionInput {
   if (!record(x) || !text(x.taskId) || !integer(x.contextRevision) || !json(x.transmissionContract) || !json(x.proposedAction) || x.reflectionRequired !== true
     || !record(x.interpretation) || !text(x.interpretation.messageId) || !text(x.interpretation.receiverId) || !json(x.interpretation.inputSnapshot)
     || !digest(x.interpretation.inputDigest) || !json(x.interpretation.answer)
     || !isUtcTimestamp(x.interpretation.recordedAt) || !(x.interpretation.expectedConditionsDisclosedAt === null || isUtcTimestamp(x.interpretation.expectedConditionsDisclosedAt))
-    || !Array.isArray(x.evidence) || !x.evidence.every(e => record(e) && text(e.evidenceId) && text(e.source) && text(e.scope) && Array.isArray(e.allowedReaders) && e.allowedReaders.every(text) && record(e.content))) return false;
+    || !Array.isArray(x.evidence) || !x.evidence.every(e => record(e) && text(e.evidenceId) && text(e.source) && text(e.scope) && Array.isArray(e.allowedReaders) && e.allowedReaders.every(text) && evidenceContent(e.content))
+    || !uniqueManifest(x.evidence.map(e => record(e) && text(e.evidenceId) ? e.evidenceId : null))) return false;
   return sameFields(['inputDigest'] as const, { inputDigest: hash(serialise(x.interpretation.inputSnapshot)) }, { inputDigest: x.interpretation.inputDigest });
 }
 export interface Management {

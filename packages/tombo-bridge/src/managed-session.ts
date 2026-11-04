@@ -114,8 +114,9 @@ export async function createManagedSession(options: ManagedSessionOptions): Prom
     const unresolved = input.evidence.filter(item => item.content.kind !== 'retrieved');
     const retrievedIds = retrieved.map(item => item.evidenceId);
     const unresolvedIds = unresolved.map(item => item.evidenceId);
-    if (!sameManifest(retrievedIds, metadata.map(item => item.evidenceId))
-      || !sameManifest([...retrievedIds, ...unresolvedIds], input.evidence.map(item => item.evidenceId))) throw new Error('Inspection evidence does not match the expected manifest');
+    const metadataIds = metadata.map(item => item.evidenceId);
+    if (!uniqueManifest(metadataIds) || !sameManifest(retrievedIds, metadataIds) || !uniqueManifest([...retrievedIds, ...unresolvedIds])
+      || unresolved.some(item => !v.evidenceContent(item.content))) throw new Error('Inspection evidence does not match the expected manifest');
     const presented = mapEvidence(input.evidence, metadata, readerId);
     const presentedIds = presented.flatMap(item => v.record(item) && v.text(item.id) ? [item.id] : []);
     if (!uniqueManifest(presentedIds) || presentedIds.length !== presented.length || !sameManifest(presentedIds, retrievedIds)) throw new Error('Inspection evidence does not match the expected manifest');

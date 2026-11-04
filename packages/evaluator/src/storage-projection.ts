@@ -1,4 +1,4 @@
-import { digestJson, isUtcTimestamp, sameManifest, uniqueManifest } from '@semevolve/core';
+import { digestJson, isUtcTimestamp, sameFields, sameManifest, uniqueManifest } from '@semevolve/core';
 import { aggregateVerdict } from './observation.js';
 import type { JsonObject, JsonValue, Verdict } from '@semevolve/core';
 import type { StorageCheckRequest } from './contracts/evaluation.js';
@@ -44,7 +44,7 @@ export function projectionOriginals(request: StorageCheckRequest): Originals {
     if (!v.record(row) || !v.record(row.message) || !v.record(row.message.envelope)) return { kind: 'corrupt' };
     const envelope = row.message.envelope;
     if (!v.text(envelope.message_id) || !v.text(envelope.language_version_id) || envelope.task_id !== request.taskId
-      || envelope.language_version_id !== input.versions.languageVersionId || typeof envelope.payload !== 'string'
+      || !sameFields(['languageVersionId'] as const, { languageVersionId: envelope.language_version_id }, { languageVersionId: input.versions.languageVersionId }) || typeof envelope.payload !== 'string'
       || row.message.digest !== digestJson(envelope) || row.payloadDigest !== digestJson(envelope.payload)
       || !isUtcTimestamp(row.receivedAt) || !v.strings(row.eventRefs) || !v.strings(row.interpretationRefs) || !v.strings(row.checkRefs)) return { kind: 'corrupt' };
     originals.push({ messageId: envelope.message_id, languageVersionId: envelope.language_version_id, payload: envelope.payload,

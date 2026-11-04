@@ -28,7 +28,7 @@ export function createRegistryInspectionAdapter(options: { readonly evaluator: E
         const snapshot = request.interpretation.inputSnapshot;
         if (!sameFields(['testSetDigest', 'evaluatorVersion'] as const, { testSetDigest: result.value.testSetDigest, evaluatorVersion: execution.result.evaluatorVersion }, { testSetDigest: fixed.testSetDigest, evaluatorVersion: fixed.evaluatorVersion })
           || execution.result.dimension !== 'transmission' || execution.result.method !== 'deterministic_test'
-          || execution.result.languageVersionId !== fixed.versionId || execution.result.scope !== fixed.scopeId
+          || !sameFields(['languageVersionId'] as const, { languageVersionId: execution.result.languageVersionId }, { languageVersionId: fixed.versionId }) || execution.result.scope !== fixed.scopeId
           || !v.record(snapshot) || !v.same(snapshot.fingerprint, fixed.fingerprint) || request.interpretation.receiverId !== fixed.fingerprint.peerId
           || execution.performedAt > fixed.checkedAt) return ok(null);
         const observation = classifyObservation({ recheckRequired: result.value.recheckRequired, reason: result.value.reason, verdict: execution.result.verdict });

@@ -8,6 +8,30 @@ import { canonicalJson, hostIdentity } from '@semevolve/core';
 import { createManagedSession, createTomboBridge } from '@semevolve/tombo-bridge';
 import { commit, fixture, input, inspected, management, update, value } from './support/fixture.mjs';
 
+function evidence(evidenceId, content) {
+  return { evidenceId, source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content };
+}
+
+test('inspection rejects duplicate, overlapping and unknown evidence before the session', { timeout: 30000 }, async () => {
+  const f = fixture();
+  let calls = 0;
+  f.session.inspect = async () => { calls += 1; return inspected(f.state); };
+  const retrieved = evidence('public-a', { kind: 'retrieved', body: 'A', digest: 'ab'.repeat(32), retrievedAt: new Date().toISOString() });
+  const cases = [
+    [retrieved, evidence('public-a', { kind: 'reference_only' })],
+    [evidence('public-gap', { kind: 'unavailable', reason: 'missing' }), evidence('public-gap', { kind: 'reference_only' })],
+    [evidence('public-gap', { kind: 'script', body: 'no' })],
+  ];
+  for (const items of cases) {
+    const inspection = input();
+    inspection.evidence = items;
+    const rejected = await f.bridge.inspect(inspection);
+    assert.equal(rejected.ok, false, JSON.stringify(rejected));
+    assert.equal(rejected.error.code, 'invalid_input');
+  }
+  assert.equal(calls, 0);
+});
+
 test('a custom digest accepts its own inspection and update and rejects the default digest', { timeout: 30000 }, async () => {
   const digest = value => createHash('sha256').update(`configured:${canonicalJson(value)}`, 'utf8').digest('hex');
   const identity = { ...hostIdentity, digest };

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { bindIdentity, sameManifest, uniqueManifest } from '@semevolve/core';
 
 const root = join(fileURLToPath(new URL('.', import.meta.url)), '../../..');
-const field = 'evaluatorId|testSetDigest|checkerId|requestDigest|criteriaDigest|evaluatorVersion|sdkCommit|updateDigest';
+const field = 'evaluatorId|testSetDigest|checkerId|requestDigest|criteriaDigest|evaluatorVersion|languageVersionId|sdkCommit|updateDigest';
 const fieldAccess = new RegExp(`\\.(?:${field})\\s*(?:!==|===)`, 'g');
 const fieldTarget = new RegExp(`(?:!==|===)\\s*[\\w$.]*\\.(?:${field})\\b`);
 

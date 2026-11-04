@@ -84,6 +84,23 @@ for (const step of ['activated', 'prepared', 'inspected']) test(`real managed se
   await store.close();
 });
 
+test('real managed session rejects duplicate or overlapping unresolved evidence', { timeout: 180000 }, async () => {
+  await runtimeReady;
+  const metadata = [{ evidenceId: 'public-a', kind: 'document', sourceGroup: 'public-synthetic-source', version: null }];
+  const sdk = await sdkOptions({ evidenceMetadata: metadata });
+  const retrieved = { evidenceId: 'public-a', source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content: { kind: 'retrieved', body: 'A', digest: 'ab'.repeat(32), retrievedAt: new Date().toISOString() } };
+  const overlap = input();
+  overlap.evidence = [retrieved, { evidenceId: 'public-a', source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content: { kind: 'reference_only' } }];
+  await assert.rejects(sdk.session.inspect(overlap), /expected manifest/);
+  const duplicated = input();
+  duplicated.evidence = [retrieved, { evidenceId: 'public-gap', source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content: { kind: 'unavailable', reason: 'missing' } }, { evidenceId: 'public-gap', source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content: { kind: 'reference_only' } }];
+  await assert.rejects(sdk.session.inspect(duplicated), /expected manifest/);
+  const unknown = input();
+  unknown.evidence = [retrieved, { evidenceId: 'public-gap', source: 'public', scope: 'public-synthetic', allowedReaders: ['evaluator'], content: { kind: 'script' } }];
+  await assert.rejects(sdk.session.inspect(unknown), /expected manifest/);
+  assert.equal(count(await commands(sdk.taskDirectory), 'activate'), 0);
+});
+
 test('real managed session rejects a retrieved subset or duplicate of the evidence manifest', { timeout: 180000 }, async () => {
   await runtimeReady;
   const metadata = [
