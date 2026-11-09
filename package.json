@@ -29,6 +29,7 @@
     "test:core-consumers": "npm run build && tsc -p tests/mechanism/core/tsconfig.json",
     "check:acceptance": "node scripts/check-acceptance.mjs",
     "check:public-artifacts": "node scripts/check-public-artifacts.mjs",
+    "check:boundaries": "node scripts/check-package-boundaries.mjs",
     "start:cli": "node apps/cli/dist/index.js",
     "start:hub": "node apps/cli/dist/hub-cli.js",
     "test:m0": "npm run build && node --test --test-reporter=tap tests/integration/m0/*.test.mjs",
